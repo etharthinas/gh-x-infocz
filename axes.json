@@ -1,0 +1,157 @@
+{
+  "description": "인포시즈 GEO 측정 쿼리 분류 축. 다섯 축은 서로 수직이며 각 축은 판별 규칙으로 MECE. code는 DB enum 값과 같다.",
+  "axes": [
+    {
+      "key": "market",
+      "label": "시장",
+      "rule": "설계 시 고정. us_security는 영문, 나머지는 국문. kr_ax와 kr_security는 같은 국문이라 문장에 목적 단서가 있어야 한다: AX(AI·온톨로지·지식그래프·LLM·데이터·도면 인식 등) 또는 보안(탐지·유출·내부자·APT·SIEM 등). Neo4j·AWS 같은 중립 도구만 나오면 'Neo4j 지식그래프' / 'Neo4j 보안 그래프'처럼 목적을 붙인다. 보안 제품(경쟁사·Microsoft Sentinel)이 나오면 그 자체로 보안 단서.",
+      "values": [
+        {
+          "code": "us_security",
+          "label": "미국 보안",
+          "note": "GOS (AI 보안 이상탐지)"
+        },
+        {
+          "code": "kr_ax",
+          "label": "국내 AX",
+          "note": "AXIOM, DELTAflow"
+        },
+        {
+          "code": "kr_security",
+          "label": "국내 보안",
+          "note": "GOS"
+        }
+      ]
+    },
+    {
+      "key": "industry",
+      "label": "산업",
+      "rule": "산업명이나 산업 고유 대상(P&ID, 웨이퍼, 팹, 약관, 계정계, PLM 등)이 문장에 있으면 해당 산업, 없으면 general. 고객사명(삼성전자·KB금융 등)만으로는 산업을 정하지 않는다 → 산업 셀의 고객사 쿼리에도 산업어를 넣고, general 셀의 고객사 쿼리는 '대기업·그룹' 같은 규모 표현으로 쓴다. 영문 'plant'는 제조·발전 모두 가능하므로 'power plant' / 'factory'로 구분.",
+      "values": [
+        {
+          "code": "semiconductor",
+          "label": "반도체"
+        },
+        {
+          "code": "energy_plant",
+          "label": "에너지/플랜트"
+        },
+        {
+          "code": "finance",
+          "label": "금융"
+        },
+        {
+          "code": "manufacturing_defense",
+          "label": "제조/방산"
+        },
+        {
+          "code": "general",
+          "label": "범용"
+        }
+      ]
+    },
+    {
+      "key": "awareness_stage",
+      "label": "인지",
+      "rule": "회사명 요구 → vendor / 선택 기준·비용·ROI·구축 방식 → tech_detail / 해법 범주 명시 → tech_name / 나머지 → problem. 시장·트렌드 질문은 범위 밖.",
+      "values": [
+        {
+          "code": "problem",
+          "label": "문제만 아는 단계",
+          "win_condition": "출처로 인용"
+        },
+        {
+          "code": "tech_name",
+          "label": "기술 이름만 아는 단계",
+          "win_condition": "출처로 인용"
+        },
+        {
+          "code": "tech_detail",
+          "label": "기술 내용을 알고 세부적으로 이해하는 단계",
+          "win_condition": "AI가 만든 선택 기준에 인포시즈 강점 포함"
+        },
+        {
+          "code": "vendor",
+          "label": "회사 이름까지 원하는 단계",
+          "win_condition": "추천 목록 포함·순위"
+        }
+      ]
+    },
+    {
+      "key": "anchor_type",
+      "label": "고유명사",
+      "rule": "고유명사 역할은 엔티티 레지스트리(entities 테이블)로 고정. 여러 개면 competitor > ecosystem > customer.",
+      "values": [
+        {
+          "code": "general",
+          "label": "general한 것",
+          "asset": "카테고리 글"
+        },
+        {
+          "code": "competitor",
+          "label": "경쟁사",
+          "asset": "비교·대안 페이지"
+        },
+        {
+          "code": "ecosystem",
+          "label": "생태계 (ex. 기술 스택 등)",
+          "asset": "파트너 페이지·공동 사례"
+        },
+        {
+          "code": "customer",
+          "label": "고객사명",
+          "asset": "고객 사례"
+        }
+      ]
+    },
+    {
+      "key": "constraint_type",
+      "label": "운영조건",
+      "rule": "산업과 무관한 운영 조건만. 문장에 조건 단서가 있어야 하며(폐쇄망·온프렘 / 수치·대규모 / 법규·감사 / 기존 시스템 연동), none이면 이런 단서가 없어야 한다. 여러 개면 대표값 하나, 나머지는 constraint_tags. 고객사명이 암시하는 규모는 scale로 치지 않는다.",
+      "values": [
+        {
+          "code": "none",
+          "label": "없음"
+        },
+        {
+          "code": "deployment",
+          "label": "배포 조건",
+          "note": "온프렘·폐쇄망·에어갭·클라우드"
+        },
+        {
+          "code": "scale",
+          "label": "규모 조건",
+          "note": "데이터량·사용자 수·도면 수·로그량"
+        },
+        {
+          "code": "regulation",
+          "label": "규제 조건",
+          "note": "망분리·산업기술보호법·CMMC·SOX 등"
+        },
+        {
+          "code": "integration",
+          "label": "연동 조건",
+          "note": "SIEM·ERP·MES 등 기존 시스템"
+        }
+      ]
+    }
+  ],
+  "not_axes": {
+    "use_case": "시장×산업 아래 하위 계층 (예: kr_ax×energy_plant → P&ID·HAZOP·RCA, 보안×반도체 → IP 유출·퇴사자 리스크). queries.use_case에 자유 텍스트로 기록.",
+    "persona": "경영·실무·현업은 분류 축이 아니라 쿼리 문장을 다양화하는 생성 렌즈."
+  },
+  "sampling": {
+    "method": "전체 조합(full factorial): 3 시장 × 5 산업 × 4 인지 × 4 고유명사 × 5 운영조건 = 1,200 슬롯 전부 채움.",
+    "competitor_variants": "초기 190개 페어와이즈 슬롯 중 competitor 슬롯 47개는 같은 문장 틀(template의 {c})에 경쟁사를 2~4개씩 바꿔 넣은 변형으로 확장(146개). 나머지 competitor 슬롯은 슬롯마다 1개, 시장별 경쟁사를 돌려 배정.",
+    "priority": "원래 우선순위(◎: us_security×semiconductor/general, kr_ax×semiconductor/energy_plant, kr_security×semiconductor/finance; △: 두 보안 시장×energy_plant)는 예산이 모자랄 때 실행 순서로만 쓴다.",
+    "totals": "seed 1,299개 + 브랜드 통제(control) 7개. 1,200개 조합 모두 활성 쿼리 1개 이상.",
+    "us_customer": "us_security × customer 슬롯은 국내 고객사를 미국 구매자 관점으로 쓴다: 금융은 KB금융의 미국 지점(NYDFS), 에너지는 두산에너빌리티(원전·발전 기자재)와 한화큐셀(미국 태양광 발전). 'KB Financial 같은 은행은…'처럼 미국 구매자가 쓰지 않을 앵커는 쓰지 않는다."
+  },
+  "known_overlaps": [
+    "customer ↔ scale: 대기업 고객사명은 규모를 암시한다. customer×none과 customer×scale의 차이는 문장 속 명시적 수치로만 구분.",
+    "ecosystem ↔ constraint: AWS는 클라우드 배포, Microsoft Sentinel은 SIEM 연동을 암시한다. ecosystem 효과는 사실상 Neo4j·Sentinel·AWS 개별 효과와 섞여 있다.",
+    "problem×customer ↔ tech_name×customer: '○○ 같은 회사는 어떻게 하나요?'와 '○○ 같은 회사는 어떤 기술을 쓰나요?'는 의도가 가깝다. 인지 단계 효과를 읽을 때 주의.",
+    "industry 최소쌍: 산업어 하나만 다른 쿼리 쌍(예: 'Neo4j 기반 금융 보안 이상탐지 업체' vs 'Neo4j 기반 보안 이상탐지 업체')은 의도된 설계이며 중복이 아니다.",
+    "energy_plant ↔ manufacturing_defense (보안 시장): 둘 다 OT·공장 보안이라 답변 출처가 겹칠 수 있다."
+  ]
+}

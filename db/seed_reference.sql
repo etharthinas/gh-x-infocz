@@ -1,0 +1,90 @@
+-- 축 라벨 · 엔진 · 엔티티 레지스트리 (CONTEXT.md §4 기준 초안, 미결 사항 §6.5 확정 시 갱신)
+
+insert into axis_labels (axis, code, label_ko, label_en, description) values
+('market', 'us_security', '미국 보안', 'US Security', 'GOS, 영문 쿼리'),
+('market', 'kr_ax', '국내 AX', 'KR AX', 'AXIOM·DELTAflow, 국문 쿼리'),
+('market', 'kr_security', '국내 보안', 'KR Security', 'GOS, 국문 쿼리'),
+('industry', 'semiconductor', '반도체', 'Semiconductor', '반도체·디스플레이, 웨이퍼·팹·설계 IP'),
+('industry', 'energy_plant', '에너지/플랜트', 'Energy/Plant', 'P&ID, HAZOP, 발전·전력·정유화학'),
+('industry', 'finance', '금융', 'Finance', '은행·증권·보험·카드, 약관·컴플라이언스'),
+('industry', 'manufacturing_defense', '제조/방산', 'Manufacturing/Defense', '제조 현장, 방산·조선'),
+('industry', 'general', '범용', 'General', '산업 특정 대상 없음'),
+('awareness_stage', 'problem', '문제만 아는 단계', 'Problem-aware', '증상·고민만 말함. 승리 조건: 출처로 인용'),
+('awareness_stage', 'tech_name', '기술 이름만 아는 단계', 'Knows tech name', '해법 범주 이름(온톨로지, UEBA 등)을 앎. 승리 조건: 출처로 인용'),
+('awareness_stage', 'tech_detail', '기술 내용을 알고 세부적으로 이해하는 단계', 'Understands tech in detail', '선택 기준·구축 방식·비용·ROI. 승리 조건: 선택 기준에 인포시즈 강점 포함'),
+('awareness_stage', 'vendor', '회사 이름까지 원하는 단계', 'Wants vendor names', '회사·제품 추천 요구. 승리 조건: 추천 목록 포함·순위'),
+('anchor_type', 'general', 'general한 것', 'None', '고유명사 없음 → 카테고리 글'),
+('anchor_type', 'competitor', '경쟁사', 'Competitor', '비교·대안 페이지'),
+('anchor_type', 'ecosystem', '생태계', 'Ecosystem', '기술 스택·파트너 (Neo4j 등) → 파트너 페이지'),
+('anchor_type', 'customer', '고객사명', 'Customer', '레퍼런스 고객사 → 고객 사례'),
+('constraint_type', 'none', '없음', 'None', '운영 조건 없음'),
+('constraint_type', 'deployment', '배포 조건', 'Deployment', '온프렘·폐쇄망·에어갭·클라우드'),
+('constraint_type', 'scale', '규모 조건', 'Scale', '데이터량·사용자 수·도면 수·로그량'),
+('constraint_type', 'regulation', '규제 조건', 'Regulation', '망분리·산업기술보호법·CMMC·SOX 등'),
+('constraint_type', 'integration', '연동 조건', 'Integration', 'SIEM·ERP·기존 시스템 연동');
+
+insert into engines (code, name) values
+('chatgpt', 'ChatGPT'),
+('perplexity', 'Perplexity'),
+('gemini', 'Gemini'),
+('naver_ai_briefing', '네이버 AI 브리핑'),
+('google_aio', 'Google AI Overviews'),
+('claude', 'Claude');
+
+insert into entities (name, aliases, role, markets, domains, notes) values
+-- self
+('인포시즈', '{Infocz,INFOCZ,인포씨즈,AXIOM,Axiom,액시엄,DELTAflow,DeltaFlow,델타플로우,GOS}', 'self', '{us_security,kr_ax,kr_security}', '{infocz.co.kr,infocz.ai,blog.infocz.ai,career.infocz.ai}', 'Infosys와 이름 충돌 주의'),
+-- T1 US Security 경쟁
+('Securonix', '{}', 'competitor', '{us_security}', '{securonix.com}', null),
+('Exabeam', '{}', 'competitor', '{us_security}', '{exabeam.com}', null),
+('DTEX', '{DTEX Systems,DTEX InTERCEPT}', 'competitor', '{us_security}', '{dtexsystems.com}', null),
+('Proofpoint ITM', '{Proofpoint Insider Threat Management,ObserveIT}', 'competitor', '{us_security}', '{proofpoint.com}', null),
+('Varonis', '{}', 'competitor', '{us_security}', '{varonis.com}', null),
+('Microsoft Purview Insider Risk Management', '{Purview IRM,Microsoft Purview}', 'competitor', '{us_security}', '{}', '제품 단위 분리 (Sentinel은 생태계)'),
+('Microsoft Defender for Identity', '{}', 'competitor', '{us_security}', '{}', null),
+('Splunk', '{Splunk UBA,Splunk ES}', 'competitor', '{us_security}', '{splunk.com}', null),
+('CrowdStrike', '{Falcon}', 'competitor', '{us_security}', '{crowdstrike.com}', null),
+('Darktrace', '{}', 'competitor', '{us_security}', '{darktrace.com}', null),
+('Vectra AI', '{Vectra}', 'competitor', '{us_security}', '{vectra.ai}', null),
+('Seclore', '{}', 'competitor', '{us_security}', '{seclore.com}', '반도체 IP 특화'),
+('Forcepoint', '{Forcepoint DLP}', 'competitor', '{us_security,kr_security}', '{forcepoint.com}', '국내 반도체 고객 사례 (벤더 자료)'),
+('Dragos', '{}', 'competitor', '{us_security,kr_security}', '{dragos.com}', 'OT 보안 (플랜트·유틸리티)'),
+('Claroty', '{}', 'competitor', '{us_security,kr_security}', '{claroty.com}', 'OT 보안 (플랜트·유틸리티)'),
+('Acalvio', '{}', 'competitor', '{us_security}', '{acalvio.com}', '반도체 IP 특화 (Fortune 250 반도체 사례)'),
+-- T1 생태계
+('Neo4j', '{네오포제이}', 'ecosystem', '{us_security,kr_ax,kr_security}', '{neo4j.com}', null),
+('Microsoft Sentinel', '{Azure Sentinel}', 'ecosystem', '{us_security,kr_security}', '{}', 'SIEM 연동'),
+-- T2 KR AX 경쟁
+('팔란티어', '{Palantir,Palantir Foundry,AIP}', 'competitor', '{kr_ax}', '{palantir.com}', null),
+('LG CNS', '{}', 'competitor', '{kr_ax}', '{lgcns.com}', null),
+('KT', '{}', 'competitor', '{kr_ax}', '{}', null),
+('코오롱베니트', '{}', 'competitor', '{kr_ax}', '{}', null),
+('솔트룩스', '{Saltlux}', 'competitor', '{kr_ax}', '{saltlux.com}', null),
+('이에이트', '{E8}', 'competitor', '{kr_ax}', '{}', null),
+('하이퍼이지', '{}', 'competitor', '{kr_ax}', '{}', null),
+('아고스', '{마키나락스,MakinaRocks}', 'competitor', '{kr_ax}', '{}', null),
+('SK AX', '{SK C&C}', 'competitor', '{kr_ax}', '{}', null),
+('엔코아', '{}', 'competitor', '{kr_ax}', '{}', 'Neo4j 파트너'),
+('Cognite', '{Cognite Data Fusion}', 'competitor', '{kr_ax}', '{cognite.com}', 'Schneider/AVEVA 인수'),
+('AVEVA', '{}', 'competitor', '{kr_ax}', '{aveva.com}', 'Schneider 계열, 산업 소프트웨어'),
+('현대엔지니어링', '{}', 'competitor', '{kr_ax}', '{}', '대체재: 고객사 자체개발 (P&ID 자동 인식 시스템)'),
+-- T2 생태계
+('Oracle', '{}', 'ecosystem', '{kr_ax}', '{oracle.com}', null),
+('AWS', '{Amazon Web Services,Amazon Neptune}', 'ecosystem', '{us_security,kr_ax,kr_security}', '{aws.amazon.com}', null),
+('SAP', '{SAP PM,SAP ERP}', 'ecosystem', '{kr_ax}', '{sap.com}', '연동 대상 ERP·설비관리'),
+('Databricks', '{}', 'ecosystem', '{kr_ax}', '{databricks.com}', '데이터 플랫폼'),
+-- T3 KR Security 경쟁
+('제이슨', '{제이머신}', 'competitor', '{kr_security}', '{}', '안랩 자회사'),
+('유넷시스템', '{애니몬 UBA,AnyMon,인스피언}', 'competitor', '{kr_security}', '{}', '애니몬 UBA는 인스피언이 인수'),
+('닉스테크', '{ADS 플러스,시큐플러스}', 'competitor', '{kr_security}', '{}', 'UEBA 계열 (ADS 플러스). 후보, 확정 필요'),
+('파수', '{Fasoo}', 'competitor', '{kr_security}', '{fasoo.com}', '문서보안·DRM. 후보, 확정 필요'),
+('소만사', '{Privacy-i}', 'competitor', '{kr_security}', '{somansa.com}', 'DLP. 후보, 확정 필요'),
+('지란지교데이터', '{피씨필터 UEBA}', 'competitor', '{kr_security}', '{}', null),
+('이글루코퍼레이션', '{이글루시큐리티,SPiDER}', 'competitor', '{kr_security}', '{}', '미검증'),
+-- 레퍼런스 고객
+('삼성전자', '{Samsung Electronics,Samsung}', 'customer', '{}', '{}', null),
+('SK하이닉스', '{SK hynix}', 'customer', '{}', '{}', null),
+('KB금융', '{KB국민은행,KB Financial}', 'customer', '{}', '{}', null),
+('두산에너빌리티', '{Doosan Enerbility}', 'customer', '{}', '{}', null),
+('한화', '{Hanwha,한화에어로스페이스,한화오션,Hanwha Qcells}', 'customer', '{}', '{}', null),
+('한국전력', '{한전,KEPCO}', 'customer', '{}', '{}', null);
