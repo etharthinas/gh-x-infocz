@@ -18,6 +18,8 @@ scripts/db.py           DB 연결 헬퍼 — 모든 코드는 이걸로 연결
 scripts/setup_db.py     빈 DB에 스키마 + 참조 데이터 생성
 scripts/import_queries.py   TSV → queries (upsert)
 scripts/export_queries.py   queries → TSV (stdout, 백업·검토용)
+scripts/export_cookies.py   (화면 있는 PC) 로그인 → data/cookies/<engine>.json
+scripts/import_cookies.sh   (서버) 쿠키 JSON → 크롤러 프로필
 crawler/                웹 UI 기반 측정 크롤러 (Playwright) → responses 등에 저장
 data/                   크롤러 로그인 프로필·증거 파일 (gitignore)
 ```
@@ -97,6 +99,15 @@ group by 1,2,3,4,5;
 .venv/bin/python -m crawler run chatgpt --batch baseline-2026-10 --runs 3 --market kr_ax --limit 10
 ```
 
+- 구현된 채널: `chatgpt`, `gemini`(로그인 없이도 동작, `settings.logged_in`에 기록), `claude`(로그인 필수). 로그인한 ChatGPT는 메모리가 섞이지 않게 임시 채팅으로 묻는다.
+- 화면 없는 서버에서는 헤드풀 로그인 대신 화면 있는 PC에서 로그인해 쿠키를 옮긴다 (`data/cookies/`는 커밋 금지, gitignore됨):
+  ```bash
+  python scripts/export_cookies.py claude chatgpt gemini     # PC: 엔진마다 Chrome이 뜨면 로그인 → Enter → data/cookies/<engine>.json
+  scp data/cookies/*.json <server>:gh-x-infocz/data/cookies/
+  scripts/import_cookies.sh                                  # 서버: 프로필에 넣고 로그인 확인 (= python -m crawler login <engine> --cookies …)
+  ```
+  Cookie-Editor 확장으로 내보낸 JSON 배열도 `--cookies`에 그대로 넣을 수 있다. 세션이 만료되면 다시 내보낸다. 헤드풀 실행이 필요하면 `xvfb-run -a`로 감싼다.
+- 엔진별로 얻을 수 있는 것: ChatGPT 비로그인은 인용은 있지만 하위 검색어(fanout)·모델명이 노출되지 않는다. Gemini는 fanout이 없고 `model`에 모드 이름(예: Flash-Lite)을 남긴다. Claude는 검색어·인용·모델을 스트림에서 모두 얻는다.
 - `--batch`는 측정 회차 라벨이다. 같은 `(batch, query, engine, run_no)`는 건너뛰므로 중단 후 다시 실행해도 된다.
 - 채널(엔진별 크롤러)은 `crawler/channels/`에 `BaseCrawler`를 상속해 `submit` / `wait_until_done` / `extract`만 구현한다. `engine` 값은 `engines.code`와 같아야 한다. 저장·엔티티 매칭·증거 보관은 `BaseCrawler`가 맡는다.
 - 미국 시장(영문) 측정은 locale만 바뀌고 IP 지역은 그대로다. VPN을 쓰면 `settings`에 남긴다.

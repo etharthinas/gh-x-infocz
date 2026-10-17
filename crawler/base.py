@@ -177,6 +177,36 @@ class BaseCrawler(ABC):
         if not self.is_logged_in(self.page):
             raise NotLoggedInError(f"{self.engine}: 로그인 상태가 확인되지 않음")
 
+    def import_cookies(self, path: Path) -> int:
+        """화면이 없는 서버용 로그인: 다른 PC 브라우저에서 내보낸 쿠키를 프로필에 넣는다.
+
+        Playwright storage_state JSON({"cookies": [...]}) 또는 Cookie-Editor 류 확장의 JSON 배열을 받는다.
+        """
+        assert self.context and self.page
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = data["cookies"] if isinstance(data, dict) else data
+        same_site = {"no_restriction": "None", "unspecified": "Lax", "lax": "Lax", "strict": "Strict", "none": "None"}
+        cookies = []
+        for c in raw:
+            cookie: dict[str, Any] = {
+                "name": c["name"], "value": c["value"], "domain": c["domain"], "path": c.get("path", "/"),
+                "secure": bool(c.get("secure", False)), "httpOnly": bool(c.get("httpOnly", False)),
+            }
+            expires = c.get("expires", c.get("expirationDate"))
+            if expires and not c.get("session"):
+                cookie["expires"] = float(expires)
+            if ss := c.get("sameSite"):
+                cookie["sameSite"] = same_site.get(str(ss).lower(), ss)
+            if cookie.get("sameSite") == "None":
+                cookie["secure"] = True
+            cookies.append(cookie)
+        self.context.add_cookies(cookies)
+        self.page.goto(self.start_url, wait_until="domcontentloaded")
+        self.page.wait_for_timeout(5000)
+        if not self.is_logged_in(self.page):
+            raise NotLoggedInError(f"{self.engine}: 쿠키 {len(cookies)}개를 넣었지만 로그인 상태가 확인되지 않음")
+        return len(cookies)
+
     # ======================================================================
     # 실행 (템플릿 메서드)
     # ======================================================================
@@ -279,6 +309,18 @@ class BaseCrawler(ABC):
             seen.add(url)
             result.append(Citation(url=url, title=item["title"]))
         return result
+
+    @staticmethod
+    def walk_json(obj: Any) -> Any:
+        """중첩 JSON의 모든 dict를 깊이 우선(등장 순서)으로 순회. 포맷이 자주 바뀌는 스트림에서 키로 찾을 때."""
+        stack = [obj]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                yield node
+                stack.extend(reversed(list(node.values())))
+            elif isinstance(node, list):
+                stack.extend(reversed(node))
 
     @staticmethod
     def parse_sse(body: str) -> list[Any]:
