@@ -15,6 +15,7 @@ fi
 failed=0
 for engine in "${engines[@]}"; do
   echo "== $engine"
+  if [ "$engine" = gemini ]; then echo "   gemini는 비로그인 전용 — 건너뜀 ($dir/gemini.json은 지워도 된다)"; continue; fi
   .venv/bin/python -m crawler login "$engine" --cookies "$dir/$engine.json" || { echo "!! $engine 실패" >&2; failed=1; }
 done
 exit $failed

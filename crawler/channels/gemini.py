@@ -1,6 +1,8 @@
 """Gemini (gemini.google.com).
 
-로그인 없이도 질의할 수 있다 (비로그인은 Flash-Lite 고정). 답변 스트림은 WebChannel(processSession)이라
+비로그인으로만 측정한다 (Flash-Lite 고정). 로그인하면 Gemini 앱 활동·과거 대화·개인 맥락이 답변에 섞일 수 있고,
+Google 세션 쿠키는 다른 기기로 옮기면 곧 무효화되어 서버에서 로그인을 유지할 수도 없다.
+로그인 상태로 감지되면 PersonalizationError로 중단한다. 답변 스트림은 WebChannel(processSession)이라
 읽기 어렵고, 인용 URL도 네트워크·<a>에 없다. 대신 답변 안 출처 칩(source-inline-chip의 button)의
 jslog 속성에 `BardVeMetadataKey:<base64 JSON>`이 있고, 그 JSON에 칩이 가리키는 URL들이 들어 있다.
 칩을 클릭하지 않고 DOM만으로 인용을 순서대로 얻는다. 하위 검색어(fanout)는 UI에 노출되지 않는다.
@@ -16,7 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from playwright.sync_api import Page
 
-from ..base import BaseCrawler
+from ..base import BaseCrawler, PersonalizationError
 from ..models import CapturedResponse, Citation, Extraction, Query
 
 _INPUT = "rich-textarea div.ql-editor[contenteditable=true], div.ql-editor[contenteditable=true]"
@@ -82,7 +84,15 @@ class GeminiCrawler(BaseCrawler):
         page.locator(_INPUT).first.wait_for(state="visible", timeout=30_000)
 
     def is_logged_in(self, page: Page) -> bool:
-        return any(c["name"] in ("SID", "__Secure-1PSID") for c in page.context.cookies("https://gemini.google.com"))
+        # 쿠키만으로는 판단할 수 없다 (옮겨 온 Google 쿠키는 남아 있어도 무효). 화면의 '로그인' 링크 유무로 본다
+        return page.locator("a[href*='accounts.google.com/ServiceLogin']").count() == 0
+
+    def check_personalization(self, page: Page) -> dict[str, Any]:
+        if self.is_logged_in(page):
+            raise PersonalizationError(
+                "gemini: 로그인 상태 — 계정 맞춤화가 섞일 수 있어 비로그인으로만 측정한다. "
+                "data/profiles/gemini 를 지우고 다시 실행")
+        return {"logged_in": False}
 
     def submit(self, page: Page, query: Query) -> None:
         self.type_into(page, page.locator(_INPUT).first, query.text)

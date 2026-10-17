@@ -99,10 +99,15 @@ group by 1,2,3,4,5;
 .venv/bin/python -m crawler run chatgpt --batch baseline-2026-10 --runs 3 --market kr_ax --limit 10
 ```
 
-- 구현된 채널: `chatgpt`, `gemini`(로그인 없이도 동작, `settings.logged_in`에 기록), `claude`(로그인 필수). 로그인한 ChatGPT는 메모리가 섞이지 않게 임시 채팅으로 묻는다.
+- 구현된 채널: `chatgpt`(로그인 선택), `claude`(로그인 필수), `gemini`(비로그인 전용).
+- **답변 맞춤화 금지.** 로그인 계정은 ChatGPT 임시 채팅·Claude 시크릿 채팅으로 묻고, 세션 시작 때 계정 설정을 확인해 하나라도 켜져 있으면 `PersonalizationError`로 그 채널을 중단한다. 확인 결과는 `responses.settings.personalization`에 남는다.
+  - ChatGPT: 저장된 메모리 참조(`sunshine`)·채팅 기록 참조(`moonshine`) 꺼짐, 맞춤 지침 비어 있음, 저장된 메모리 0
+  - Claude: 메모리 생성·과거 대화 검색(`enabled_saffron*`, `enabled_melange`) 꺼짐, 개인 선호 지침·저장된 메모리 비어 있음
+  - Gemini: Google 세션은 서버로 옮기면 무효화되고 맞춤화를 확인할 방법도 없어 비로그인으로만 측정한다. 로그인 상태가 감지되면 중단
+- claude.ai는 headless 브라우저를 Cloudflare로 막는다. 서버에서는 `xvfb-run -a .venv/bin/python -m crawler run claude …`처럼 헤드풀로 실행한다.
 - 화면 없는 서버에서는 헤드풀 로그인 대신 화면 있는 PC에서 로그인해 쿠키를 옮긴다 (`data/cookies/`는 커밋 금지, gitignore됨):
   ```bash
-  python scripts/export_cookies.py claude chatgpt gemini     # PC: 엔진마다 Chrome이 뜨면 로그인 → Enter → data/cookies/<engine>.json
+  python scripts/export_cookies.py claude chatgpt            # PC: 엔진마다 Chrome이 뜨면 로그인 → Enter → data/cookies/<engine>.json
   scp data/cookies/*.json <server>:gh-x-infocz/data/cookies/
   scripts/import_cookies.sh                                  # 서버: 프로필에 넣고 로그인 확인 (= python -m crawler login <engine> --cookies …)
   ```

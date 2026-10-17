@@ -1,44 +1,43 @@
 """Claude (claude.ai). 로그인 필수.
 
-화면 없는 서버에서는 다른 PC 브라우저에서 claude.ai 쿠키(sessionKey 포함)를 JSON으로 내보낸 뒤
-`python -m crawler login claude --cookies cookies.json`으로 프로필에 넣는다.
+화면 없는 서버에서는 PC에서 scripts/export_cookies.py로 쿠키를 내보내 scripts/import_cookies.sh로 넣는다.
+claude.ai는 headless 브라우저에 Cloudflare 403을 주므로 xvfb-run으로 헤드풀 실행한다.
 
-답변 스트림은 POST /api/organizations/<org>/chat_conversations/<id>/completion (SSE, Anthropic 메시지 이벤트).
-    message_start.message.model                       모델
-    content_block_start(tool_use name=web_search) +
-      input_json_delta → {"query": …}                 fanout
-    content_block_start(tool_result).content[]        검색 결과 (type=knowledge, url, title) → 직전 검색어와 연결
-    content_block_delta(citation_start_delta).citation 답변에 실제로 단 인용
-스트림 뒤에 오는 대화 트리 GET(chat_conversations/<id>?tree=…)에도 같은 블록이 완성형으로 들어 있어 함께 읽는다.
-웹 검색은 계정 설정(검색 도구 켜기)을 따른다.
+- 시크릿 채팅(/new?incognito)으로 묻는다: 기록·메모리에 남지 않는다. 세션 시작 때 계정의 맞춤화 설정
+  (개인 선호 지침, 메모리 생성·과거 대화 검색, 저장된 메모리)이 모두 꺼져 있는지 확인하고, 켜져 있으면 중단한다.
+- 답변 스트림(ConversationService/StreamTimeline)은 바이너리 protobuf라, 답변이 끝난 뒤 페이지 안에서
+  대화 JSON(GET chat_conversations/<id>?tree=True&rendering_mode=messages&render_all_tools=true)을 받아 읽는다.
+      model                                  모델 (예: claude-opus-5-5)
+      content[type=tool_use name=web_search] input.query → fanout
+      content[type=tool_result].content[]    검색 결과 (knowledge: url, title) → 직전 검색어와 연결
+      content[type=text].citations[]         답변에 실제로 단 인용
+- 웹 검색은 계정 설정(enabled_web_search)을 따른다. settings.web_search에 남긴다.
 """
 
 from __future__ import annotations
 
-import json
+import re
 from typing import Any
 
 from playwright.sync_api import Page
 
-from ..base import BaseCrawler
+from ..base import BaseCrawler, CrawlerError, PersonalizationError
 from ..models import CapturedResponse, Citation, Extraction, Query
 
 _INPUT = ("div[contenteditable=true][data-testid=chat-input]:visible, div.ProseMirror[contenteditable=true]:visible, "
           "[contenteditable=true]:visible")
-_TURN = "[data-is-streaming]"
-_BODY = ".font-claude-response, .font-claude-message"
+_TURN = "[data-testid=assistant-message]"
 _MODEL = "[data-testid=model-selector-dropdown]"
 _SEARCH_TOOLS = ("web_search", "brave_search", "search")
+_CONVERSATION_ID = re.compile(r"/chat/([0-9a-f-]{36})")
+
+_FETCH_JS = "async u => { const r = await fetch(u); return [r.status, r.ok ? await r.json() : null]; }"
 
 
 class ClaudeCrawler(BaseCrawler):
     engine = "claude"
-    start_url = "https://claude.ai/new"
+    start_url = "https://claude.ai/new?incognito"
     requires_login = True
-    capture_patterns = (
-        r"claude\.ai/api/organizations/[^/]+/chat_conversations/[^/?]+/(retry_)?completion",
-        r"claude\.ai/api/organizations/[^/]+/chat_conversations/[^/?]+\?",
-    )
     answer_timeout_s = 300.0
     delay_between_runs_s = (15.0, 30.0)  # 사용량 제한이 빡빡하다
 
@@ -59,6 +58,29 @@ class ClaudeCrawler(BaseCrawler):
             return "claude_usage_limit"
         return None
 
+    def check_personalization(self, page: Page) -> dict[str, Any]:
+        org = self._org(page)
+        account = self._get(page, "/api/account")
+        profile = self._get(page, "/api/account_profile")
+        memory = self._get(page, f"/api/organizations/{org}/memory")
+        memory_settings = self._get(page, f"/api/organizations/{org}/memory/settings")
+        account_settings = account.get("settings") or {}
+
+        # saffron = 대화에서 메모리 생성, saffron_search = 과거 대화 검색·참조, melange = 새 메모리 시스템
+        flags = {k: bool(memory_settings.get(k) or account_settings.get(k))
+                 for k in ("enabled_saffron", "enabled_saffron_search", "enabled_melange")}
+        problems = [k for k, on in flags.items() if on]
+        if (profile.get("conversation_preferences") or "").strip():
+            problems.append("개인 선호 지침(conversation_preferences)")
+        if (memory.get("memory") or "").strip():
+            problems.append("저장된 메모리")
+        if problems:
+            raise PersonalizationError(
+                "claude: 답변 맞춤화 설정이 켜져 있음 — " + ", ".join(problems)
+                + ". 설정 > 일반(개인 선호)·기능(메모리, 과거 대화 검색)에서 끄고 비운 뒤 다시 실행")
+        self._web_search = account_settings.get("enabled_web_search")
+        return {"flags": flags, "conversation_preferences": False, "memory": False}
+
     def submit(self, page: Page, query: Query) -> None:
         self.type_into(page, page.locator(_INPUT).first, query.text)
 
@@ -69,133 +91,96 @@ class ClaudeCrawler(BaseCrawler):
             return turn.get_attribute("data-is-streaming") == "false"
 
         self.wait_for_stable(page, turn, quiet_s=5.0, done=done)
-        page.wait_for_timeout(2000)  # 대화 트리 GET·인용 칩 반영
+        page.wait_for_timeout(1500)
 
     def extract(self, page: Page, captured: list[CapturedResponse]) -> Extraction:
         turn = page.locator(_TURN).last
-        body = turn.locator(_BODY).last if turn.locator(_BODY).count() else turn
-        net = _parse_captured(captured)
-        # 스트림 텍스트에는 검색 단계 요약('Searched the web' 등)이 섞이지 않는다
-        text = (net["text"] or body.inner_text()).strip()
+        m = _CONVERSATION_ID.search(page.url)
+        if not m:
+            raise CrawlerError(f"claude: 대화 id를 URL에서 찾지 못함 ({page.url})")
+        tree = self._get(page, f"/api/organizations/{self._org(page)}/chat_conversations/{m.group(1)}"
+                               "?tree=True&rendering_mode=messages&render_all_tools=true")
+        net = parse_conversation(tree)
 
         citations: dict[str, Citation] = {}
-        for c in [*net["citations"], *self.links_in(body)]:
-            if "claude.ai" in c.url or "anthropic.com" in c.url:
-                continue
+        for c in net["citations"]:
             existing = citations.setdefault(c.url, c)
             existing.title = existing.title or c.title
             existing.snippet = existing.snippet or c.snippet
             existing.fanout_query = existing.fanout_query or net["url_query"].get(c.url)
 
-        model_ui = page.locator(_MODEL).first.inner_text().strip() if page.locator(_MODEL).count() else None
+        model_ui = self._model_ui(page)
         return Extraction(
-            response_text=text,
-            answer_present=bool(text),
+            response_text=net["text"],
+            answer_present=bool(net["text"]),
             response_html=turn.evaluate("e => e.outerHTML"),
             model=net["model"] or model_ui,
             citations=list(citations.values()),
             fanout_queries=net["fanouts"],
-            extra={"conversation_url": page.url, "model_ui": model_ui, "search_results": net["search_results"]},
+            extra={"conversation_url": page.url, "conversation": tree, "search_results": net["search_results"]},
         )
 
     def extra_settings(self, page: Page) -> dict[str, Any]:
-        return {"model_ui": page.locator(_MODEL).first.inner_text().strip() if page.locator(_MODEL).count() else None}
+        return {"model_ui": self._model_ui(page), "incognito": "incognito" in page.url,
+                "web_search": getattr(self, "_web_search", None)}
+
+    # ---------- 내부 ----------
+    @staticmethod
+    def _org(page: Page) -> str:
+        org = next((c["value"] for c in page.context.cookies("https://claude.ai") if c["name"] == "lastActiveOrg"), None)
+        if not org:
+            raise CrawlerError("claude: lastActiveOrg 쿠키 없음 — 다시 로그인")
+        return org
+
+    @staticmethod
+    def _get(page: Page, path: str) -> dict[str, Any]:
+        status, body = page.evaluate(_FETCH_JS, path)
+        if status != 200 or not isinstance(body, dict):
+            raise CrawlerError(f"claude: GET {path} → {status}")
+        return body
+
+    @staticmethod
+    def _model_ui(page: Page) -> str | None:
+        model = page.locator(_MODEL)
+        return model.first.inner_text().strip() or None if model.count() else None
 
 
-def _parse_captured(captured: list[CapturedResponse]) -> dict[str, Any]:
-    model: str | None = None
-    texts: list[str] = []
+def parse_conversation(tree: dict[str, Any]) -> dict[str, Any]:
+    """대화 JSON의 마지막 assistant 메시지 → 텍스트·fanout·인용·검색 결과."""
     fanouts: list[str] = []
     citations: list[Citation] = []
     search_results: list[dict[str, Any]] = []
     url_query: dict[str, str] = {}
+    texts: list[str] = []
 
-    def add_result(item: dict, query: str | None) -> None:
-        if item.get("url"):
-            search_results.append({"url": item["url"], "title": item.get("title"), "query": query})
-            if query:
-                url_query.setdefault(item["url"], query)
-
-    def add_citation(c: dict) -> None:
-        url = c.get("url") or (c.get("metadata") or {}).get("url")
-        if url:
-            citations.append(Citation(url=url, title=c.get("title"), snippet=c.get("cited_text") or c.get("text")))
-
-    for cap in captured:
-        if cap.status != 200:
-            continue
-        if "/completion" in cap.url:
-            # ---- 스트림: 블록 index별로 조립
-            blocks: dict[int, dict[str, Any]] = {}
-            last_query: str | None = None
-            for ev in BaseCrawler.parse_sse(cap.body):
-                if not isinstance(ev, dict):
-                    continue
-                kind = ev.get("type")
-                if kind == "message_start":
-                    model = (ev.get("message") or {}).get("model") or model
-                elif kind == "content_block_start":
-                    block = dict(ev.get("content_block") or {})
-                    block["_json"] = ""
-                    blocks[ev.get("index", len(blocks))] = block
-                    if block.get("type") == "tool_result":
-                        for item in block.get("content") or []:
-                            if isinstance(item, dict):
-                                add_result(item, last_query)
-                    for c in block.get("citations") or []:
-                        add_citation(c)
-                elif kind == "content_block_delta":
-                    block = blocks.setdefault(ev.get("index", -1), {"type": "text", "_json": ""})
-                    delta = ev.get("delta") or {}
-                    dtype = delta.get("type")
-                    if dtype == "text_delta":
-                        block["text"] = block.get("text", "") + delta.get("text", "")
-                    elif dtype == "input_json_delta":
-                        block["_json"] += delta.get("partial_json", "")
-                    elif dtype in ("citation_start_delta", "citations_delta"):
-                        add_citation(delta.get("citation") or {})
-                elif kind == "content_block_stop":
-                    block = blocks.get(ev.get("index", -1)) or {}
-                    if block.get("type") == "tool_use" and block.get("name") in _SEARCH_TOOLS:
-                        try:
-                            q = (json.loads(block["_json"] or "{}") or block.get("input") or {}).get("query")
-                        except json.JSONDecodeError:
-                            q = None
-                        if q:
-                            fanouts.append(q)
-                            last_query = q
-            texts = [b.get("text", "") for _, b in sorted(blocks.items()) if b.get("type") == "text"] or texts
-        else:
-            # ---- 대화 트리: 마지막 assistant 메시지의 완성된 content 블록
-            try:
-                tree = json.loads(cap.body)
-            except json.JSONDecodeError:
-                continue
-            messages = [m for m in tree.get("chat_messages") or [] if m.get("sender") == "assistant"]
-            if not messages:
-                continue
-            msg = messages[-1]
-            model = model or tree.get("model")
-            last_query = None
-            tree_texts = []
-            for block in msg.get("content") or []:
-                btype = block.get("type")
-                if btype == "tool_use" and block.get("name") in _SEARCH_TOOLS:
-                    if q := (block.get("input") or {}).get("query"):
-                        fanouts.append(q)
-                        last_query = q
-                elif btype == "tool_result":
-                    for item in block.get("content") or []:
-                        if isinstance(item, dict):
-                            add_result(item, last_query)
-                elif btype == "text":
-                    tree_texts.append(block.get("text", ""))
-                    for c in block.get("citations") or []:
-                        add_citation(c)
-            texts = texts or tree_texts
+    messages = [m for m in tree.get("chat_messages") or [] if m.get("sender") == "assistant"]
+    last_query: str | None = None
+    last_tool_seen = False
+    for block in (messages[-1].get("content") or []) if messages else []:
+        btype = block.get("type")
+        if btype in ("tool_use", "tool_result"):
+            last_tool_seen = True
+        if btype == "tool_use" and block.get("name") in _SEARCH_TOOLS:
+            if q := (block.get("input") or {}).get("query"):
+                fanouts.append(q)
+                last_query = q
+        elif btype == "tool_result":
+            for item in block.get("content") or []:
+                if isinstance(item, dict) and item.get("url"):
+                    search_results.append({"url": item["url"], "title": item.get("title"), "query": last_query})
+                    if last_query:
+                        url_query.setdefault(item["url"], last_query)
+        elif btype == "text":
+            # 검색 사이사이의 진행 멘트("더 찾아볼게요")는 버리고 마지막 도구 호출 뒤의 텍스트만 답변으로 본다
+            if last_tool_seen:
+                texts, last_tool_seen = [], False
+            texts.append(block.get("text", ""))
+            for c in block.get("citations") or []:
+                if url := c.get("url") or (c.get("metadata") or {}).get("url"):
+                    citations.append(Citation(url=url, title=c.get("title"), snippet=c.get("cited_text")))
 
     return {
-        "model": model,
+        "model": tree.get("model"),
         "text": "".join(texts).strip() or None,
         "fanouts": list(dict.fromkeys(fanouts)),
         "citations": citations,

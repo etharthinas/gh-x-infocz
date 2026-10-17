@@ -8,7 +8,8 @@
               content_references(grouped_webpages)가 인용. 답변 안 인용 칩은 <a>로 렌더링된다.
 
 두 경우 모두 화면(DOM)에서 답변 텍스트·링크를 먼저 읽고, 네트워크 원문에서 인용·fanout·모델을 보탠다.
-로그인 상태에서는 메모리·맞춤 설정이 섞이지 않도록 임시 채팅(temporary-chat)으로 묻는다.
+로그인 상태에서는 임시 채팅(temporary-chat)으로 묻는다. 임시 채팅도 메모리·맞춤 지침을 참조할 수 있으므로
+세션 시작 때 계정 설정(check_personalization)이 모두 꺼져 있는지 확인하고, 켜져 있으면 중단한다.
 """
 
 from __future__ import annotations
@@ -20,15 +21,32 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from playwright.sync_api import Page
 
-from ..base import BaseCrawler
+from ..base import BaseCrawler, PersonalizationError
 from ..models import CapturedResponse, Citation, Extraction, Query
 
-_INPUT = "#prompt-textarea:visible, textarea[name=prompt]:visible"
+_INPUT = "#prompt-textarea:visible, div.ProseMirror[contenteditable=true]:visible, textarea[name=prompt]:visible"
 # 로그인: data-message-author-role / 비로그인: li[data-message-role]
 _TURN = "[data-message-author-role=assistant], li[data-message-role=assistant]"
 _STOP = "[data-testid=stop-button], button[aria-label*='중지'], button[aria-label*='Stop']"
-# 쿠키 동의, '로그아웃 유지' 등 입력을 가리는 팝업
-_DISMISS = ("모두 허용", "Accept all", "로그아웃 유지", "Stay logged out")
+# 쿠키 동의, '로그아웃 유지', 기능 안내(메모리 업데이트 등) 같은 입력을 가리는 팝업.
+# '설정'처럼 설정을 바꾸는 버튼은 누르지 않고 닫기/확인만 누른다
+_DISMISS_ANYWHERE = ("모두 허용", "Accept all", "로그아웃 유지", "Stay logged out")  # 쿠키 배너는 dialog가 아니다
+_DISMISS_IN_DIALOG = ("확인", "계속", "OK", "Continue", "Got it", "알겠습니다", "닫기", "Close")
+
+# 답변을 사용자별로 바꾸는 설정 (/backend-api/settings/user). True면 측정 중단
+_PERSONAL_FLAGS = {"sunshine": "저장된 메모리 참조", "moonshine": "채팅 기록 참조"}
+_CUSTOM_INSTRUCTION_FIELDS = ("about_user_message", "about_model_message", "name_user_message", "role_user_message",
+                              "traits_model_message", "other_user_message", "personality_type_selection")
+_PERSONALIZATION_JS = """async () => {
+    const s = await (await fetch('/api/auth/session')).json();
+    const h = {Authorization: 'Bearer ' + s.accessToken};
+    const get = async u => { const r = await fetch(u, {headers: h}); return r.ok ? r.json() : {error: r.status}; };
+    return {
+        settings: (await get('/backend-api/settings/user')).settings || {},
+        instructions: await get('/backend-api/user_system_messages'),
+        memories: await get('/backend-api/memories?include_memory_entries=false'),
+    };
+}"""
 _SR_HEADER = re.compile(r"^\s*(ChatGPT의 말|ChatGPT said)\s*:?\s*\n")
 
 
@@ -54,8 +72,13 @@ class ChatGPTCrawler(BaseCrawler):
         # 임시 채팅은 로그인 상태에서만 의미가 있다 (비로그인은 원래 기록이 없음)
         url = self.start_url + ("?temporary-chat=true" if self.is_logged_in(page) else "")
         page.goto(url, wait_until="domcontentloaded")
-        page.locator(_INPUT).first.wait_for(state="visible", timeout=30_000)
-        self._dismiss_overlays(page)
+        # 안내 팝업(메모리 업데이트, 임시 채팅 소개 등)은 렌더링 뒤 늦게, 여러 개 연달아 뜬다 → 입력창이 보일 때까지 닫기
+        box = page.locator(_INPUT).first
+        for _ in range(20):
+            self._dismiss_overlays(page)
+            if box.is_visible() and not page.locator("[role=dialog]:visible").count():
+                return
+        box.wait_for(state="visible", timeout=5_000)
 
     def is_logged_in(self, page: Page) -> bool:
         return any(c["name"].startswith("__Secure-next-auth.session-token") for c in page.context.cookies("https://chatgpt.com"))
@@ -112,12 +135,44 @@ class ChatGPTCrawler(BaseCrawler):
         logged_in = self.is_logged_in(page)
         return {"logged_in": logged_in, "temporary_chat": logged_in}
 
+    def check_personalization(self, page: Page) -> dict[str, Any]:
+        if not self.is_logged_in(page):
+            return {"logged_in": False}
+        data = page.evaluate(_PERSONALIZATION_JS)
+        flags = {k: data["settings"].get(k) for k in _PERSONAL_FLAGS}
+        instructions = {k: v for k, v in data["instructions"].items() if k in _CUSTOM_INSTRUCTION_FIELDS and v}
+        memory_tokens = data["memories"].get("memory_num_tokens")
+        problems = [f"{label}({k})" for k, label in _PERSONAL_FLAGS.items() if flags[k]]
+        if instructions:
+            problems.append(f"맞춤 지침({', '.join(instructions)})")
+        if memory_tokens:
+            problems.append(f"저장된 메모리 {memory_tokens} 토큰")
+        if "error" in data["instructions"] or "error" in data["memories"]:
+            problems.append(f"설정 조회 실패({data['instructions'].get('error')}, {data['memories'].get('error')})")
+        if problems:
+            raise PersonalizationError(
+                "chatgpt: 답변 맞춤화 설정이 켜져 있음 — " + ", ".join(problems)
+                + ". 설정 > 개인 맞춤 설정에서 메모리·채팅 기록 참조를 끄고 맞춤 지침·메모리를 비운 뒤 다시 실행")
+        return {"flags": flags, "custom_instructions": False, "memory_tokens": memory_tokens or 0}
+
     def _dismiss_overlays(self, page: Page) -> None:
-        for label in _DISMISS:
-            button = page.get_by_role("button", name=label, exact=True)
-            if button.count() and button.first.is_visible():
-                button.first.click()
-                page.wait_for_timeout(500)
+        page.wait_for_timeout(1500)
+        for _ in range(3):
+            clicked = False
+            candidates = [page.get_by_role("button", name=label, exact=True) for label in _DISMISS_ANYWHERE]
+            candidates += [page.locator("[role=dialog]").get_by_role("button", name=label, exact=True)
+                           for label in _DISMISS_IN_DIALOG]
+            for button in candidates:
+                if button.count() and button.first.is_visible():
+                    button.first.click()
+                    page.wait_for_timeout(700)
+                    clicked = True
+                    break
+            if not clicked:
+                if page.locator("[role=dialog]:visible").count():
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(500)
+                return
 
 
 def _json_lines(body: str) -> list[Any]:

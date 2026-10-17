@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
-from playwright.sync_api import BrowserContext, Locator, Page, Playwright, Response, sync_playwright
+from playwright.sync_api import BrowserContext, Locator, Page, Playwright, Request, Response, sync_playwright
 
 from .entities import EntityMatcher
 from .models import CapturedResponse, Citation, Extraction, Query
@@ -64,6 +64,10 @@ class CrawlerError(Exception):
 
 class BlockedError(CrawlerError):
     """캡차·봇 차단. 같은 채널을 계속 두드리면 악화되므로 러너는 해당 채널을 중단한다."""
+
+
+class PersonalizationError(BlockedError):
+    """메모리·맞춤 지침 등 답변을 바꿀 수 있는 계정 설정이 켜져 있음. 꺼야 측정할 수 있으므로 채널을 중단한다."""
 
 
 class NotLoggedInError(CrawlerError):
@@ -112,6 +116,7 @@ class BaseCrawler(ABC):
         self.page: Page | None = None
         self._pending: list[Response] = []
         self._capture_res = [re.compile(p) for p in self.capture_patterns]
+        self._personalization: dict[str, Any] | None = None  # 세션 첫 실행에서 확인
 
     # ======================================================================
     # 채널이 구현할 훅
@@ -145,6 +150,14 @@ class BaseCrawler(ABC):
         """채널별 실행 조건 (모델 선택기 값, 웹검색 토글 등) → responses.settings."""
         return {}
 
+    def check_personalization(self, page: Page) -> dict[str, Any]:
+        """세션마다 한 번, 답변을 사용자별로 바꾸는 계정 설정(메모리, 대화 기록 참조, 맞춤 지침 등)을 확인.
+
+        켜진 항목이 있으면 PersonalizationError. 확인한 값은 responses.settings.personalization에 남는다.
+        로그인하지 않은 채널은 맞춤화가 없으므로 기본 구현은 빈 dict.
+        """
+        return {}
+
     # ======================================================================
     # 브라우저 수명주기
     # ======================================================================
@@ -159,7 +172,7 @@ class BaseCrawler(ABC):
             args=["--disable-blink-features=AutomationControlled"],
             **LOCALES[self.language],
         )
-        self.context.on("response", self._on_response)  # 모든 탭에 적용
+        self.context.on("requestfinished", self._on_request_finished)  # 모든 탭에 적용
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         return self
 
@@ -228,6 +241,8 @@ class BaseCrawler(ABC):
             self._raise_if_blocked(page)
             if self.requires_login and not self.is_logged_in(page):
                 raise NotLoggedInError(f"{self.engine}: 로그인 필요 (python -m crawler login {self.engine})")
+            if self._personalization is None:
+                self._personalization = self.check_personalization(page)
             self.submit(page, query)
             self.wait_until_done(page)
             self._raise_if_blocked(page)
@@ -350,9 +365,10 @@ class BaseCrawler(ABC):
         self._pending.clear()
         return self.page
 
-    def _on_response(self, response: Response) -> None:
-        # 핸들러 안에서 본문을 읽으면 스트림 도중이라 잘리므로 객체만 모아 두고 완료 후 읽는다
-        if any(p.search(response.url) for p in self._capture_res):
+    def _on_request_finished(self, request: Request) -> None:
+        # 본문까지 다 받은 요청만 모은다. 열린 채 남는 스트림(WebChannel 등)을 읽으면 끝없이 기다린다.
+        # 핸들러 안에서 읽지 않고 객체만 모아 두었다가 답변 완료 후 읽는다
+        if any(p.search(request.url) for p in self._capture_res) and (response := request.response()):
             self._pending.append(response)
 
     def _collect_captured(self) -> list[CapturedResponse]:
@@ -416,6 +432,7 @@ class BaseCrawler(ABC):
             "browser": self.browser_channel or "chromium",
             "user_agent": page.evaluate("navigator.userAgent"),
             "logged_in": self.is_logged_in(page) if self.requires_login else None,
+            "personalization": self._personalization,
             **self.extra_settings(page),
         }
         raw = {

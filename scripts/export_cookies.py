@@ -3,15 +3,16 @@
 DB·.env 없이 Playwright만 있으면 된다.
 
   pip install playwright && playwright install chromium
-  python scripts/export_cookies.py claude chatgpt gemini       # 엔진마다 브라우저가 뜨면 직접 로그인 → Enter
+  python scripts/export_cookies.py claude chatgpt              # 엔진마다 브라우저가 뜨면 직접 로그인 → Enter
   python scripts/export_cookies.py claude --browser-channel msedge
   scp data/cookies/*.json <server>:gh-x-infocz/data/cookies/
 
-- Google 계정 로그인(Gemini, Google로 로그인하는 ChatGPT·Claude)은 Playwright 기본 Chromium을 막는 경우가 있어
+- Gemini는 비로그인으로만 측정하므로 대상이 아니다 (crawler/channels/gemini.py).
+- Google 계정으로 로그인하는 ChatGPT·Claude는 Playwright 기본 Chromium을 막는 경우가 있어
   기본값으로 설치된 Chrome(--browser-channel chrome)을 쓴다. Chrome이 없으면 --browser-channel chromium.
 - 결과는 Playwright storage_state 형식({"cookies": [...], "origins": [...]}). 로그인 세션이 그대로 들어 있으니
   커밋·공유하지 않는다 (data/cookies/는 .gitignore).
-- 측정용 계정은 맞춤 설정·메모리를 꺼 둔다 (ChatGPT 메모리, Claude 메모리/검색 기록 참조 등).
+- 측정용 계정은 맞춤 설정·메모리를 꺼 둔다. 켜져 있으면 크롤러가 세션 시작 때 PersonalizationError로 멈춘다.
 """
 
 from __future__ import annotations
@@ -30,8 +31,6 @@ ROOT = Path(__file__).resolve().parent.parent
 ENGINES = {
     "chatgpt": ("https://chatgpt.com/auth/login", ("chatgpt.com", "openai.com"), "__Secure-next-auth.session-token"),
     "claude": ("https://claude.ai/login", ("claude.ai", "anthropic.com"), "sessionKey"),
-    "gemini": ("https://accounts.google.com/ServiceLogin?continue=https://gemini.google.com/app",
-               ("google.com", "gemini.google.com"), "__Secure-1PSID"),
 }
 
 
