@@ -30,6 +30,8 @@ _ROOT = "#m-x-content"
 _TURN = "#m-x-content [data-scope-id=turn]"
 _HEADINGS = ("AI 개요", "AI Overview")
 _SEARCH_BOX = "textarea[name=q], input[name=q]"
+_RESULTS = "#rso, #search"  # 일반 검색 결과 영역
+_CAPTCHA_TEXTS = ("비정상적인 트래픽", "unusual traffic", "로봇이 아닙니다", "not a robot")
 _REDIRECT = ("/goto", "/url")
 _TRAILING_BUTTONS = ("", "모두 표시", "Show all")
 _IGNORE_HOSTS = ("google.com", "google.co.kr", "gstatic.com", "googleusercontent.com", "youtube.com/redirect")
@@ -71,6 +73,15 @@ class GoogleAIOCrawler(BaseCrawler):
         page.locator(_SEARCH_BOX).first.wait_for(state="visible", timeout=30_000)
         page.wait_for_timeout(random.randint(1500, 4000))
 
+    def blocked_reason(self, page: Page) -> str | None:
+        if reason := super().blocked_reason(page):
+            return reason
+        # 실제 Chrome에서는 /sorry로 가지 않고 /search 주소 그대로 캡차 페이지가 뜬다
+        if page.locator("#captcha-form, form[action*='sorry']").count() or any(
+                page.get_by_text(t, exact=False).count() for t in _CAPTCHA_TEXTS):
+            return "google_captcha"
+        return None
+
     def is_logged_in(self, page: Page) -> bool:
         return page.locator("a[href*='accounts.google.com/ServiceLogin']").count() == 0
 
@@ -96,7 +107,11 @@ class GoogleAIOCrawler(BaseCrawler):
         try:
             heading.first.wait_for(state="attached", timeout=_APPEAR_TIMEOUT_MS)
         except Exception:
-            return  # AI 개요 없음 → extract에서 answer_present=False
+            # AI 개요 없음 → extract에서 answer_present=False. 단 검색 결과가 실제로 있을 때만 (캡차·빈 화면 제외)
+            self._raise_if_blocked(page)
+            if not page.locator(_RESULTS).count():
+                raise CrawlerError("google_aio: 검색 결과 화면이 아님 — 'AI 개요 없음'으로 기록하지 않음")
+            return
         turn = page.locator(_TURN)
         self.wait_for_stable(page, turn, quiet_s=3.0, done=lambda: turn.first.get_attribute("data-complete") == "true")
         if turn.first.evaluate(_EXPAND_JS):
