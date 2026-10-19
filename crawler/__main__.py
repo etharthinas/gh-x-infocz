@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import random
 import subprocess
 import sys
 from pathlib import Path
@@ -50,7 +51,7 @@ def main() -> None:
     common.add_argument("engine")
     common.add_argument("--browser-channel", help="'chrome'이면 설치된 Chrome 사용")
     common.add_argument("--data-dir", type=Path, default=Path("data"))
-    common.add_argument("--account", help="같은 엔진의 다른 로그인 계정 이름 (예: acct1). 프로필이 profiles/<engine>-<account>로 분리된다")
+    common.add_argument("--account", help="같은 엔진의 다른 로그인 계정 이름 (예: acct1). 프로필은 data/accounts/<account>/profiles/<engine>")
 
     login = sub.add_parser("login", parents=[common])
     login.add_argument("--cookies", type=Path,
@@ -71,6 +72,8 @@ def main() -> None:
     run.add_argument("--no-artifacts", action="store_true",
                      help="성공한 실행의 스크린샷·HTML을 저장하지 않는다 (응답·인용·원문은 DB에 있다). 실패한 실행은 저장")
     run.add_argument("--reverse", action="store_true", help="쿼리를 역순으로. 같은 배치를 두 번째 계정으로 동시에 돌릴 때")
+    run.add_argument("--shuffle", metavar="SEED",
+                     help="쿼리 순서를 SEED로 섞는다. 여러 계정이 같은 배치를 동시에 돌 때 계정마다 다른 SEED")
     run.add_argument("--usage-cap", type=float,
                      help="Claude: 5시간·주간 사용량이 이 %%를 넘으면 그 계정을 멈춘다 (예: 50). 러너가 나중에 다시 시도한다")
     run.add_argument("--proxy", help="브라우저 프록시, 예: socks5://127.0.0.1:1080. settings.proxy·exit_ip에 남는다")
@@ -102,6 +105,8 @@ def main() -> None:
                                     ids=args.ids, limit=args.limit)[worker::shards]
         if args.reverse:  # 같은 배치를 다른 계정으로 동시에 돌릴 때 반대쪽 끝부터 (겹침 최소화)
             queries.reverse()
+        if args.shuffle:  # 여러 계정·프로세스가 같은 배치를 나눠 돌 때 서로 다른 순서로 (겹침 최소화)
+            random.Random(f"{args.shuffle}-{worker}").shuffle(queries)
         failures = 0
         # locale은 브라우저 실행 옵션이라 언어별로 세션을 나눈다
         for language in ("ko", "en"):

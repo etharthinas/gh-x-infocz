@@ -119,7 +119,7 @@ group by 1,2,3,4,5;
 - 미국 시장(영문) 측정은 locale만 바뀌고 IP 지역은 그대로다. VPN을 쓰면 `settings`에 남긴다.
 - **병렬 실행**: `--workers N`이면 쿼리를 N개 프로세스로 나눠 돈다 (Playwright sync API는 스레드 공유가 안 된다). 워커 1번부터는 `data/profiles/<engine>-wN`에 프로필 복사본을 만들어 쓴다. 다시 로그인했으면 `profiles/<engine>-w*`를 지워야 새 세션이 복사된다. 로그인 채널(ChatGPT·Claude)은 워커가 같은 계정 사용량 한도를 나눠 쓰므로 2개 정도로 둔다.
 - **증거 파일**: 기본은 실행마다 스크린샷(JPEG)·페이지 HTML(gzip)을 `data/artifacts/`에 남긴다. 응답·인용·원문은 DB에 있으므로 대량 측정은 `--no-artifacts`로 돌린다 (실패한 실행만 남는다). 디스크가 10GB라 전량 측정에 증거 파일을 남기면 버티지 못한다.
-- **계정 여러 개**: `--account acct1`이면 프로필이 `data/profiles/<engine>-acct1`로 분리된다 (`crawler login claude --account acct1 --cookies data/cookies/claude-acct1.json`). 같은 배치를 두 계정으로 동시에 돌릴 때 하나는 `--reverse`로 반대쪽 끝부터 돈다. 같은 행을 동시에 저장하면 늦은 쪽은 건너뛴다. `settings.account`에 계정 이름이 남는다.
+- **계정 여러 개**: `--account acct1`이면 프로필은 `data/accounts/acct1/profiles/<engine>`이다 (gitignore됨) (`crawler login claude --account acct1 --cookies data/cookies/claude-acct1.json`). 같은 배치를 두 계정으로 동시에 돌릴 때 하나는 `--reverse`로 반대쪽 끝부터 돈다. 같은 행을 동시에 저장하면 늦은 쪽은 건너뛴다. `settings.account`에 계정 이름이 남는다.
 - **Claude 사용량 상한**: `--usage-cap 50`이면 실행마다 계정 사용량(5시간·주간 %)을 확인해 넘으면 그 채널을 멈춘다 (러너가 1시간 뒤 다시 시도).
 - **프록시**: `--proxy socks5://127.0.0.1:1080`. 서버 IP가 Google에서 `/sorry` 차단을 받으면 화면 있는 PC(맥북)를 출구로 쓴다. PC에서 역방향 동적 포워딩을 열면 서버의 127.0.0.1:1080에 그 PC를 거쳐 나가는 SOCKS 프록시가 생긴다:
   ```bash

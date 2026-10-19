@@ -106,7 +106,7 @@ class BaseCrawler(ABC):
         max_raw_body_chars: int = 100_000,
         proxy: str | None = None,  # 예: socks5://127.0.0.1:1080 (맥북 역방향 SSH 터널)
         worker: int = 0,  # 병렬 실행 시 워커 번호. 0이 아니면 프로필 복사본을 쓴다
-        account: str | None = None,  # 같은 엔진의 다른 로그인 계정. 프로필이 profiles/<engine>-<account>로 분리된다
+        account: str | None = None,  # 같은 엔진의 다른 로그인 계정. 프로필은 data/accounts/<account>/profiles/<engine>
         save_artifacts: bool = True,  # False면 성공한 실행의 증거 파일을 남기지 않는다 (DB에 다 있다). 실패는 항상 남긴다
     ):
         self.store = store
@@ -118,10 +118,11 @@ class BaseCrawler(ABC):
         self.save_artifacts = save_artifacts
         self.worker = worker
         self.account = account
-        name = f"{self.engine}-{account}" if account else self.engine
-        self.base_profile_dir = data_dir / "profiles" / name
+        # 계정별 로그인 프로필: data/accounts/<account>/profiles/<engine>
+        profiles = data_dir / "accounts" / account / "profiles" if account else data_dir / "profiles"
+        self.base_profile_dir = profiles / self.engine
         # 같은 프로필 디렉터리를 두 브라우저가 동시에 열 수 없어 워커마다 복사본을 쓴다
-        self.profile_dir = self.base_profile_dir if worker == 0 else data_dir / "profiles" / f"{name}-w{worker}"
+        self.profile_dir = self.base_profile_dir if worker == 0 else profiles / f"{self.engine}-w{worker}"
         self.artifacts_root = data_dir / "artifacts"
         self.max_raw_body_chars = max_raw_body_chars
 
