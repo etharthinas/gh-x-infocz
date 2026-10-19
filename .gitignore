@@ -5,5 +5,5 @@ data/profiles/
 data/artifacts/
 data/cookies/
 data/logs/
-data/run_full.py
+data/*.py
 data/accounts/

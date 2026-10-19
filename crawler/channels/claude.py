@@ -30,6 +30,7 @@ _TURN = "[data-testid=assistant-message]"
 _MODEL = "[data-testid=model-selector-dropdown]"
 _SEARCH_TOOLS = ("web_search", "brave_search", "search")
 _CONVERSATION_ID = re.compile(r"/chat/([0-9a-f-]{36})")
+_API_CONVERSATION_ID = re.compile(r"/chat_conversations/([0-9a-f-]{36})")
 
 _FETCH_JS = "async u => { const r = await fetch(u); return [r.status, r.ok ? await r.json() : null]; }"
 
@@ -43,7 +44,20 @@ class ClaudeCrawler(BaseCrawler):
 
     usage_cap: float | None = None  # --usage-cap: 이 %를 넘으면 계정을 멈춘다 (다른 용도로도 쓰는 계정을 남겨 두기 위해)
 
+    def __enter__(self) -> ClaudeCrawler:
+        super().__enter__()
+        self._completion_id: str | None = None
+        assert self.context
+        self.context.on("request", self._on_request)
+        return self
+
+    def _on_request(self, request) -> None:
+        # 시크릿 채팅 URL이 /new?incognito로 남는 계정이 있어 대화 id를 completion 요청 주소에서 얻는다
+        if request.method == "POST" and "/completion" in request.url and (m := _API_CONVERSATION_ID.search(request.url)):
+            self._completion_id = m.group(1)
+
     def open_fresh(self, page: Page, query: Query) -> None:
+        self._completion_id = None
         page.goto(self.start_url, wait_until="domcontentloaded")
         if self.usage_cap is not None and "/login" not in page.url:
             usage = self._usage(page)
@@ -106,10 +120,10 @@ class ClaudeCrawler(BaseCrawler):
 
     def extract(self, page: Page, captured: list[CapturedResponse]) -> Extraction:
         turn = page.locator(_TURN).last
-        m = _CONVERSATION_ID.search(page.url)
-        if not m:
-            raise CrawlerError(f"claude: 대화 id를 URL에서 찾지 못함 ({page.url})")
-        tree = self._get(page, f"/api/organizations/{self._org(page)}/chat_conversations/{m.group(1)}"
+        conversation_id = self._conversation_id(page)
+        if not conversation_id:
+            raise CrawlerError(f"claude: 대화 id를 찾지 못함 ({page.url})")
+        tree = self._get(page, f"/api/organizations/{self._org(page)}/chat_conversations/{conversation_id}"
                                "?tree=True&rendering_mode=messages&render_all_tools=true")
         net = parse_conversation(tree)
 
@@ -141,6 +155,12 @@ class ClaudeCrawler(BaseCrawler):
         return {k: (data.get(k) or {}).get("utilization") for k in ("five_hour", "seven_day")}
 
     # ---------- 내부 ----------
+    def _conversation_id(self, page: Page) -> str | None:
+        """URL(/chat/<id>)에서, 없으면 이번 질문의 completion 요청 주소에서."""
+        if m := _CONVERSATION_ID.search(page.url):
+            return m.group(1)
+        return self._completion_id
+
     @staticmethod
     def _org(page: Page) -> str:
         org = next((c["value"] for c in page.context.cookies("https://claude.ai") if c["name"] == "lastActiveOrg"), None)
