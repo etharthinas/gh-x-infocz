@@ -121,6 +121,7 @@ group by 1,2,3,4,5;
 - **증거 파일**: 기본은 실행마다 스크린샷(JPEG)·페이지 HTML(gzip)을 `data/artifacts/`에 남긴다. 응답·인용·원문은 DB에 있으므로 대량 측정은 `--no-artifacts`로 돌린다 (실패한 실행만 남는다). 디스크가 10GB라 전량 측정에 증거 파일을 남기면 버티지 못한다.
 - **계정 여러 개**: `--account acct1`이면 프로필은 `data/accounts/acct1/profiles/<engine>`이다 (gitignore됨) (`crawler login claude --account acct1 --cookies data/cookies/claude-acct1.json`). 같은 배치를 두 계정으로 동시에 돌릴 때 하나는 `--reverse`로 반대쪽 끝부터 돈다. 같은 행을 동시에 저장하면 늦은 쪽은 건너뛴다. `settings.account`에 계정 이름이 남는다.
 - **Claude 사용량 상한**: `--usage-cap 50`이면 실행마다 계정 사용량(5시간·주간 %)을 확인해 넘으면 그 채널을 멈춘다 (러너가 1시간 뒤 다시 시도).
+- **Google은 실제 Chrome으로**: Playwright 번들 Chromium은 서버 IP·가정용 IP 모두 첫 검색부터 `/sorry`를 받았다. `sudo .venv/bin/playwright install --with-deps chrome` 후 `--browser-channel chrome`으로 돌린다.
 - **프록시**: `--proxy socks5://127.0.0.1:1080`. 서버 IP가 Google에서 `/sorry` 차단을 받으면 화면 있는 PC(맥북)를 출구로 쓴다. PC에서 역방향 동적 포워딩을 열면 서버의 127.0.0.1:1080에 그 PC를 거쳐 나가는 SOCKS 프록시가 생긴다:
   ```bash
   caffeinate -is ssh -N -R 1080 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes collector@<server>   # PC (OpenSSH 7.6+)

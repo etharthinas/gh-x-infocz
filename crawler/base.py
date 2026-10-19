@@ -189,7 +189,8 @@ class BaseCrawler(ABC):
             channel=self.browser_channel,
             headless=self.headless,
             viewport={"width": 1366, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
+            # 디스크가 10GB라 프로필 캐시가 커지지 않게 묶는다
+            args=["--disable-blink-features=AutomationControlled", "--disk-cache-size=52428800"],
             proxy={"server": self.proxy} if self.proxy else None,
             **LOCALES[self.language],
         )
