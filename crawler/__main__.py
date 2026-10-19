@@ -1,12 +1,16 @@
 """사용법
     python -m crawler login chatgpt                       # 헤드풀 브라우저로 직접 로그인 (최초 1회)
     python -m crawler run chatgpt --batch baseline-2026-10 --runs 3 --market kr_ax --limit 10
+    python -m crawler run naver_ai_briefing --batch baseline-2026-10 --runs 10 --workers 3   # 쿼리를 3개 프로세스로 나눠 실행
+    python -m crawler run google_aio --batch baseline-2026-10 --proxy socks5://127.0.0.1:1080
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 from . import channels  # noqa: F401  (채널 등록)
@@ -15,6 +19,28 @@ from .entities import EntityMatcher
 from .store import Store
 
 log = logging.getLogger("crawler")
+
+# 연달아 이만큼 실패하면 채널을 멈춘다 (프록시 끊김·로그인 만료 등으로 쿼리만 소진되지 않게)
+MAX_CONSECUTIVE_FAILURES = 5
+
+
+def _spawn_workers(n: int) -> None:
+    """같은 인자로 --shard i/n 프로세스 n개를 띄우고 모두 끝날 때까지 기다린다.
+
+    Playwright sync API는 스레드 간 공유가 안 되므로 스레드 대신 프로세스로 나눈다.
+    """
+    argv, skip = [], False
+    for a in sys.argv[1:]:
+        if skip:
+            skip = False
+        elif a == "--workers":
+            skip = True
+        elif not a.startswith("--workers="):
+            argv.append(a)
+    procs = [subprocess.Popen([sys.executable, "-m", "crawler", *argv, "--shard", f"{i}/{n}"]) for i in range(n)]
+    codes = [p.wait() for p in procs]
+    if any(codes):
+        log.warning("워커 종료 코드: %s", codes)
 
 
 def main() -> None:
@@ -38,6 +64,10 @@ def main() -> None:
     run.add_argument("--limit", type=int)
     run.add_argument("--headless", action="store_true")
     run.add_argument("--no-skip", action="store_true", help="이미 있는 (batch, query, engine, run_no)도 다시 실행")
+    run.add_argument("--workers", type=int, default=1,
+                     help="병렬 프로세스 수. 쿼리를 나눠 맡고, 워커마다 브라우저 프로필 복사본(profiles/<engine>-wN)을 쓴다")
+    run.add_argument("--shard", help=argparse.SUPPRESS)  # 'i/n' — --workers가 내부적으로 붙인다
+    run.add_argument("--proxy", help="브라우저 프록시, 예: socks5://127.0.0.1:1080. settings.proxy·exit_ip에 남는다")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -55,28 +85,40 @@ def main() -> None:
                 crawler.login()
         return
 
+    if args.workers > 1 and not args.shard:
+        _spawn_workers(args.workers)
+        return
+    worker, shards = map(int, args.shard.split("/")) if args.shard else (0, 1)
+
     with Store() as store:
         matcher = EntityMatcher(store.load_entities())
         queries = store.get_queries(origin=args.origin, market=args.market, language=args.language,
-                                    ids=args.ids, limit=args.limit)
+                                    ids=args.ids, limit=args.limit)[worker::shards]
+        failures = 0
         # locale은 브라우저 실행 옵션이라 언어별로 세션을 나눈다
         for language in ("ko", "en"):
             batch_queries = [q for q in queries if q.language == language]
             if not batch_queries:
                 continue
             with cls(store, matcher, language=language, headless=args.headless,
-                     browser_channel=args.browser_channel, data_dir=args.data_dir) as crawler:
+                     browser_channel=args.browser_channel, data_dir=args.data_dir,
+                     proxy=args.proxy, worker=worker) as crawler:
                 # run_no 바깥 루프: 같은 쿼리를 연달아 묻지 않도록 회차별로 한 바퀴씩
                 for run_no in range(1, args.runs + 1):
                     for q in batch_queries:
                         try:
                             if crawler.run(q, batch=args.batch, run_no=run_no, skip_existing=not args.no_skip):
                                 crawler.pause_between_runs()
+                            failures = 0
                         except BlockedError:
                             log.exception("차단됨 — %s 중단", args.engine)
                             return
                         except CrawlerError:
                             log.exception("실패 q%s r%s — 다음 쿼리로", q.id, run_no)
+                            failures += 1
+                            if failures >= MAX_CONSECUTIVE_FAILURES:
+                                log.error("%d번 연속 실패 — %s 중단", failures, args.engine)
+                                return
 
 
 if __name__ == "__main__":

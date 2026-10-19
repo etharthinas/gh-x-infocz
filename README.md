@@ -99,7 +99,8 @@ group by 1,2,3,4,5;
 .venv/bin/python -m crawler run chatgpt --batch baseline-2026-10 --runs 3 --market kr_ax --limit 10
 ```
 
-- 구현된 채널: `chatgpt`(로그인 선택), `claude`(로그인 필수), `gemini`(비로그인 전용).
+- 구현된 채널: `chatgpt`(로그인 선택), `claude`(로그인 필수), `gemini`(비로그인 전용), `google_aio`·`naver_ai_briefing`(비로그인 전용, 검색 결과 페이지의 AI 개요·AI 브리핑).
+- Google AI 개요·네이버 AI 브리핑은 쿼리마다 뜨지 않을 수 있다(같은 쿼리도 실행마다 다름). 안 뜨면 `response_text`가 비고 `notes='no_ai_answer'`로 기록한다 (노출률 분모). Google 인용 링크는 `google.com/goto` 리디렉트라 302 `Location`으로 실제 URL을 얻는다.
 - **답변 맞춤화 금지.** 로그인 계정은 ChatGPT 임시 채팅·Claude 시크릿 채팅으로 묻고, 세션 시작 때 계정 설정을 확인해 하나라도 켜져 있으면 `PersonalizationError`로 그 채널을 중단한다. 확인 결과는 `responses.settings.personalization`에 남는다.
   - ChatGPT: 저장된 메모리 참조(`sunshine`)·채팅 기록 참조(`moonshine`) 꺼짐, 맞춤 지침 비어 있음, 저장된 메모리 0
   - Claude: 메모리 생성·과거 대화 검색(`enabled_saffron*`, `enabled_melange`) 꺼짐, 개인 선호 지침·저장된 메모리 비어 있음
@@ -112,10 +113,17 @@ group by 1,2,3,4,5;
   scripts/import_cookies.sh                                  # 서버: 프로필에 넣고 로그인 확인 (= python -m crawler login <engine> --cookies …)
   ```
   Cookie-Editor 확장으로 내보낸 JSON 배열도 `--cookies`에 그대로 넣을 수 있다. 세션이 만료되면 다시 내보낸다. 헤드풀 실행이 필요하면 `xvfb-run -a`로 감싼다.
-- 엔진별로 얻을 수 있는 것: ChatGPT 비로그인은 인용은 있지만 하위 검색어(fanout)·모델명이 노출되지 않는다. Gemini는 fanout이 없고 `model`에 모드 이름(예: Flash-Lite)을 남긴다. Claude는 검색어·인용·모델을 스트림에서 모두 얻는다.
+- 엔진별로 얻을 수 있는 것: Google·네이버는 fanout·모델명이 없다. ChatGPT 비로그인은 인용은 있지만 하위 검색어(fanout)·모델명이 노출되지 않는다. ChatGPT 로그인은 2026-10부터 스트림이 끝난 요청으로 잡히지 않아 답변 뒤 대화 JSON(`/backend-api/conversation/<id>`)에서 모델·인용(답변의 `turnNsearchM` ref → `search_result_groups`)을 읽는다. 이 JSON에는 하위 검색어가 없어 fanout은 비어 있다. Gemini는 fanout이 없고 `model`에 모드 이름(예: Flash-Lite)을 남긴다. Claude는 검색어·인용·모델을 스트림에서 모두 얻는다.
 - `--batch`는 측정 회차 라벨이다. 같은 `(batch, query, engine, run_no)`는 건너뛰므로 중단 후 다시 실행해도 된다.
 - 채널(엔진별 크롤러)은 `crawler/channels/`에 `BaseCrawler`를 상속해 `submit` / `wait_until_done` / `extract`만 구현한다. `engine` 값은 `engines.code`와 같아야 한다. 저장·엔티티 매칭·증거 보관은 `BaseCrawler`가 맡는다.
 - 미국 시장(영문) 측정은 locale만 바뀌고 IP 지역은 그대로다. VPN을 쓰면 `settings`에 남긴다.
+- **병렬 실행**: `--workers N`이면 쿼리를 N개 프로세스로 나눠 돈다 (Playwright sync API는 스레드 공유가 안 된다). 워커 1번부터는 `data/profiles/<engine>-wN`에 프로필 복사본을 만들어 쓴다. 다시 로그인했으면 `profiles/<engine>-w*`를 지워야 새 세션이 복사된다. 로그인 채널(ChatGPT·Claude)은 워커가 같은 계정 사용량 한도를 나눠 쓰므로 2개 정도로 둔다.
+- **프록시**: `--proxy socks5://127.0.0.1:1080`. 서버 IP가 Google에서 `/sorry` 차단을 받으면 화면 있는 PC(맥북)를 출구로 쓴다. PC에서 역방향 동적 포워딩을 열면 서버의 127.0.0.1:1080에 그 PC를 거쳐 나가는 SOCKS 프록시가 생긴다:
+  ```bash
+  caffeinate -is ssh -N -R 1080 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes collector@<server>   # PC (OpenSSH 7.6+)
+  .venv/bin/python -m crawler run google_aio --batch baseline-2026-10 --proxy socks5://127.0.0.1:1080       # 서버
+  ```
+  세션마다 실제 나가는 IP를 확인해 `settings.proxy`·`settings.exit_ip`에 남긴다. 터널이 끊기면 Chromium은 직접 연결로 돌아가지 않고 실패하며, 5번 연속 실패하면 채널을 멈춘다.
 
 ### 2. 크롤러 밖에서 얻은 결과 기록 (API·수동)
 

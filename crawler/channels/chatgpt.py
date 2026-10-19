@@ -25,8 +25,10 @@ from ..base import BaseCrawler, PersonalizationError
 from ..models import CapturedResponse, Citation, Extraction, Query
 
 _INPUT = "#prompt-textarea:visible, div.ProseMirror[contenteditable=true]:visible, textarea[name=prompt]:visible"
-# 로그인: data-message-author-role / 비로그인: li[data-message-role]
-_TURN = "[data-message-author-role=assistant], li[data-message-role=assistant]"
+# 로그인: data-content-search-unit-key="…:assistant" (2026-10~), 이전 data-message-author-role / 비로그인: li[data-message-role]
+_TURN = ("[data-content-search-unit-key$=':assistant'], [data-message-author-role=assistant], "
+         "li[data-message-role=assistant]")
+_BODY = "[data-markdown-text-style=assistant-message], .markdown"
 _STOP = "[data-testid=stop-button], button[aria-label*='중지'], button[aria-label*='Stop']"
 # 쿠키 동의, '로그아웃 유지', 기능 안내(메모리 업데이트 등) 같은 입력을 가리는 팝업.
 # '설정'처럼 설정을 바꾸는 버튼은 누르지 않고 닫기/확인만 누른다
@@ -47,6 +49,9 @@ _PERSONALIZATION_JS = """async () => {
         memories: await get('/backend-api/memories?include_memory_entries=false'),
     };
 }"""
+_CONVERSATION_URL = re.compile(r"/backend-api/conversation/[0-9a-f-]{36}(\?|$)")
+# 답변 안 인용 표식: DIL Cite refs·fallbackMarkdown의 citeturn928182search4 → search_result_groups의 ref_id
+_REF_TOKEN = re.compile(r"turn(\d+)(search|news|view|fetch)(\d+)")
 _SR_HEADER = re.compile(r"^\s*(ChatGPT의 말|ChatGPT said)\s*:?\s*\n")
 
 
@@ -65,6 +70,8 @@ class ChatGPTCrawler(BaseCrawler):
     capture_patterns = (
         r"chatgpt\.com/unauth-mweb/conversation/updates",
         r"chatgpt\.com/backend-(api|anon)/(f/)?conversation(\?|$)",
+        # 로그인 (2026-10~): 스트림은 끝난 요청으로 안 잡히고, 답변 뒤 프런트가 받는 대화 JSON을 읽는다
+        r"chatgpt\.com/backend-api/conversation/[0-9a-f-]{36}(\?|$)",
     )
     answer_timeout_s = 240.0
 
@@ -99,11 +106,18 @@ class ChatGPTCrawler(BaseCrawler):
 
     def extract(self, page: Page, captured: list[CapturedResponse]) -> Extraction:
         turn = page.locator(_TURN).last
-        body = turn.locator(".markdown").first if turn.locator(".markdown").count() else turn
+        body = turn.locator(_BODY).first if turn.locator(_BODY).count() else turn
         text = _SR_HEADER.sub("", body.inner_text()).strip()
 
-        events = [e for c in captured if c.status == 200 for e in _json_lines(c.body)]
+        events = [e for c in captured if c.status == 200 and not _CONVERSATION_URL.search(c.url)
+                  for e in _json_lines(c.body)]
         net = _parse_events(events)
+        trees = [c.body for c in captured if c.status == 200 and _CONVERSATION_URL.search(c.url)]
+        tree = _parse_conversation(json.loads(trees[-1])) if trees else None
+        if tree:
+            net["citations"] += tree["citations"]
+            net["model"] = net["model"] or tree["model"]
+            net["markdown"] = net["markdown"] or tree["markdown"]
 
         citations: dict[str, Citation] = {}
         for c in [*self.links_in(body), *net["citations"]]:
@@ -128,7 +142,8 @@ class ChatGPTCrawler(BaseCrawler):
             citations=list(citations.values()),
             fanout_queries=net["fanouts"],
             extra={"frontend": "unauth-mweb" if "/unauth-mweb/" in " ".join(c.url for c in captured) else "backend-api",
-                   "conversation_url": page.url, "markdown": net["markdown"]},
+                   "conversation_url": page.url, "markdown": net["markdown"],
+                   "search_results": tree["search_results"] if tree else None},
         )
 
     def extra_settings(self, page: Page) -> dict[str, Any]:
@@ -241,3 +256,45 @@ def _parse_events(events: list[Any]) -> dict[str, Any]:
                 citations.append(Citation(url=item["url"], title=title, snippet=item.get("snippet")))
 
     return {"citations": citations, "fanouts": list(dict.fromkeys(fanouts)), "model": model, "markdown": markdown}
+
+
+def _parse_conversation(tree: dict[str, Any]) -> dict[str, Any]:
+    """로그인 대화 JSON(/backend-api/conversation/<id>) → 마지막 질문 이후 답변의 인용·모델·검색 결과.
+
+    하위 검색어는 이 JSON에 없다 (web.run 호출 내용이 비어 있음). 인용은 답변이 실제로 단 ref만 순서대로 고른다.
+    """
+    chain, node_id = [], tree.get("current_node")
+    mapping = tree.get("mapping") or {}
+    while node_id and node_id in mapping:
+        chain.append(mapping[node_id])
+        node_id = mapping[node_id].get("parent")
+    messages = [n["message"] for n in reversed(chain) if n.get("message")]
+    last_user = max((i for i, m in enumerate(messages) if m["author"]["role"] == "user"), default=-1)
+    messages = messages[last_user + 1:]
+
+    refs: dict[tuple[str, str, str], dict[str, Any]] = {}
+    search_results: list[dict[str, Any]] = []
+    cited_text: list[str] = []
+    model = markdown = None
+    for m in messages:
+        meta = m.get("metadata") or {}
+        model = meta.get("resolved_model_slug") or meta.get("model_slug") or model
+        for group in meta.get("search_result_groups") or []:
+            for entry in group.get("entries") or []:
+                ref = entry.get("ref_id") or {}
+                key = (str(ref.get("turn_index")), str(ref.get("ref_type")), str(ref.get("ref_index")))
+                if entry.get("url") and key not in refs:
+                    refs[key] = entry
+                    search_results.append({"url": entry["url"], "title": entry.get("title"), "ref": "".join(key)})
+        if m["author"]["role"] == "assistant" and m.get("recipient") == "all":
+            if dil := meta.get("model_dil_v2"):
+                markdown = dil.get("fallbackMarkdown") or markdown
+                cited_text.append(json.dumps(dil.get("constants"), ensure_ascii=False))
+                cited_text.append(dil.get("fallbackMarkdown") or "")
+            cited_text += [p for p in (m.get("content") or {}).get("parts") or [] if isinstance(p, str)]
+
+    citations = []
+    for token in dict.fromkeys(t.groups() for t in _REF_TOKEN.finditer("\n".join(cited_text))):
+        if entry := refs.get(token):
+            citations.append(Citation(url=entry["url"], title=entry.get("title"), snippet=entry.get("snippet") or None))
+    return {"citations": citations, "model": model, "markdown": markdown, "search_results": search_results}

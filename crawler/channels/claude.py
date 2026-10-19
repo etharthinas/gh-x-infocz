@@ -45,6 +45,11 @@ class ClaudeCrawler(BaseCrawler):
         page.goto(self.start_url, wait_until="domcontentloaded")
         if "/login" not in page.url:
             page.locator(_INPUT).first.wait_for(state="visible", timeout=30_000)
+            # 쿠키 동의 배너가 입력창 클릭을 가로막는다 (새 프로필·워커 복사본). 필수 쿠키만 남기고 닫는다
+            reject = page.get_by_role("button", name=re.compile(r"^(모든 쿠키 거부|Reject all cookies)$"))
+            if reject.count():
+                reject.first.click()
+                page.wait_for_timeout(500)
 
     def is_logged_in(self, page: Page) -> bool:
         has_session = any(c["name"] == "sessionKey" for c in page.context.cookies("https://claude.ai"))

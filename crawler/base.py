@@ -17,6 +17,7 @@ import json
 import logging
 import random
 import re
+import shutil
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -101,13 +102,19 @@ class BaseCrawler(ABC):
         browser_channel: str | None = None,  # 'chrome'이면 설치된 Chrome 사용 (봇 탐지에 유리)
         data_dir: Path = Path("data"),
         max_raw_body_chars: int = 100_000,
+        proxy: str | None = None,  # 예: socks5://127.0.0.1:1080 (맥북 역방향 SSH 터널)
+        worker: int = 0,  # 병렬 실행 시 워커 번호. 0이 아니면 프로필 복사본을 쓴다
     ):
         self.store = store
         self.matcher = matcher
         self.language = language
         self.headless = headless
         self.browser_channel = browser_channel
-        self.profile_dir = data_dir / "profiles" / self.engine
+        self.proxy = proxy
+        self.worker = worker
+        self.base_profile_dir = data_dir / "profiles" / self.engine
+        # 같은 프로필 디렉터리를 두 브라우저가 동시에 열 수 없어 워커마다 복사본을 쓴다
+        self.profile_dir = self.base_profile_dir if worker == 0 else data_dir / "profiles" / f"{self.engine}-w{worker}"
         self.artifacts_root = data_dir / "artifacts"
         self.max_raw_body_chars = max_raw_body_chars
 
@@ -117,6 +124,7 @@ class BaseCrawler(ABC):
         self._pending: list[Response] = []
         self._capture_res = [re.compile(p) for p in self.capture_patterns]
         self._personalization: dict[str, Any] | None = None  # 세션 첫 실행에서 확인
+        self._exit_ip: str | None = None  # 프록시를 쓸 때 실제 나가는 IP (세션 첫 실행에서 확인)
 
     # ======================================================================
     # 채널이 구현할 훅
@@ -162,6 +170,10 @@ class BaseCrawler(ABC):
     # 브라우저 수명주기
     # ======================================================================
     def __enter__(self) -> BaseCrawler:
+        if self.profile_dir != self.base_profile_dir and not self.profile_dir.exists() and self.base_profile_dir.exists():
+            # 로그인 세션을 이어받는다. 다시 로그인했으면 profiles/<engine>-w* 를 지워야 새 세션이 복사된다
+            shutil.copytree(self.base_profile_dir, self.profile_dir,
+                            ignore=shutil.ignore_patterns("Singleton*", "*.lock", "lockfile"))
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._pw = sync_playwright().start()
         self.context = self._pw.chromium.launch_persistent_context(
@@ -170,6 +182,7 @@ class BaseCrawler(ABC):
             headless=self.headless,
             viewport={"width": 1366, "height": 900},
             args=["--disable-blink-features=AutomationControlled"],
+            proxy={"server": self.proxy} if self.proxy else None,
             **LOCALES[self.language],
         )
         self.context.on("requestfinished", self._on_request_finished)  # 모든 탭에 적용
@@ -243,6 +256,8 @@ class BaseCrawler(ABC):
                 raise NotLoggedInError(f"{self.engine}: 로그인 필요 (python -m crawler login {self.engine})")
             if self._personalization is None:
                 self._personalization = self.check_personalization(page)
+            if self.proxy and self._exit_ip is None:
+                self._exit_ip = self._check_exit_ip()
             self.submit(page, query)
             self.wait_until_done(page)
             self._raise_if_blocked(page)
@@ -299,7 +314,10 @@ class BaseCrawler(ABC):
         deadline = time.monotonic() + timeout_s
         last, last_change = None, time.monotonic()
         while time.monotonic() < deadline:
-            current = target.first.inner_text() if target.count() else ""
+            try:  # 스트리밍 중 요소가 교체되는 순간(ChatGPT 검색 중 등)에는 잠깐 없을 수 있다
+                current = target.first.inner_text(timeout=2_000) if target.count() else ""
+            except Exception:
+                current = ""
             if current != last:
                 last, last_change = current, time.monotonic()
             elif current and (time.monotonic() - last_change >= quiet_s or (done and done())):
@@ -382,6 +400,16 @@ class BaseCrawler(ABC):
         self._pending.clear()
         return captured
 
+    def _check_exit_ip(self) -> str:
+        """프록시가 실제로 쓰이는지 확인. 프록시가 죽어 있으면 서버 IP로 새지 않도록 실패시킨다."""
+        assert self.context
+        try:
+            ip = self.context.request.get("https://api.ipify.org", timeout=15_000).text().strip()
+        except Exception as e:
+            raise BlockedError(f"{self.engine}: 프록시 {self.proxy} 연결 실패 — 터널 확인 ({e!r})") from e
+        log.info("%s: 프록시 %s → 나가는 IP %s", self.engine, self.proxy, ip)
+        return ip
+
     def _raise_if_blocked(self, page: Page) -> None:
         if reason := self.blocked_reason(page):
             raise BlockedError(f"{self.engine}: 차단 감지 ({reason}) — 브라우저에서 직접 풀거나 잠시 중단")
@@ -433,6 +461,8 @@ class BaseCrawler(ABC):
             "user_agent": page.evaluate("navigator.userAgent"),
             "logged_in": self.is_logged_in(page) if self.requires_login else None,
             "personalization": self._personalization,
+            "proxy": self.proxy,
+            "exit_ip": self._exit_ip,
             **self.extra_settings(page),
         }
         raw = {
