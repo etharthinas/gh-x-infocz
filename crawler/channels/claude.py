@@ -16,7 +16,9 @@ claude.ai는 headless 브라우저에 Cloudflare 403을 주므로 xvfb-run으로
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from playwright.sync_api import Page
@@ -152,7 +154,26 @@ class ClaudeCrawler(BaseCrawler):
     def _usage(self, page: Page) -> dict[str, float | None]:
         """계정 사용량 % (설정 > 사용량 화면과 같은 값): 5시간 세션 한도, 주간 한도."""
         data = self._get(page, f"/api/organizations/{self._org(page)}/usage")
-        return {k: (data.get(k) or {}).get("utilization") for k in ("five_hour", "seven_day")}
+        usage = {k: (data.get(k) or {}).get("utilization") for k in ("five_hour", "seven_day")}
+        self._record_usage(data)
+        return usage
+
+    def _record_usage(self, data: dict[str, Any]) -> None:
+        """scripts/monitor.py가 읽는 계정별 사용량 스냅샷 (data/state/claude_usage.json). 실패해도 무시."""
+        path = self.artifacts_root.parent / "state" / "claude_usage.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            state = json.loads(path.read_text()) if path.exists() else {}
+            state[self.account or "main"] = {
+                **{k: {"pct": (data.get(k) or {}).get("utilization"), "resets_at": (data.get(k) or {}).get("resets_at")}
+                   for k in ("five_hour", "seven_day")},
+                "cap": self.usage_cap, "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(state, indent=1))
+            tmp.replace(path)  # 여러 레인이 동시에 써도 반쯤 쓴 파일을 읽지 않게
+        except Exception:
+            pass
 
     # ---------- 내부 ----------
     def _conversation_id(self, page: Page) -> str | None:

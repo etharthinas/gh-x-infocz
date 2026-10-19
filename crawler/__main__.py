@@ -72,6 +72,8 @@ def main() -> None:
     run.add_argument("--no-artifacts", action="store_true",
                      help="성공한 실행의 스크린샷·HTML을 저장하지 않는다 (응답·인용·원문은 DB에 있다). 실패한 실행은 저장")
     run.add_argument("--reverse", action="store_true", help="쿼리를 역순으로. 같은 배치를 두 번째 계정으로 동시에 돌릴 때")
+    run.add_argument("--require-login", action="store_true",
+                     help="로그인이 선택인 채널(ChatGPT)도 로그인 상태에서만 측정한다. 세션이 없으면 채널을 멈춘다")
     run.add_argument("--shuffle", metavar="SEED",
                      help="쿼리 순서를 SEED로 섞는다. 여러 계정이 같은 배치를 동시에 돌 때 계정마다 다른 SEED")
     run.add_argument("--usage-cap", type=float,
@@ -118,6 +120,8 @@ def main() -> None:
                      proxy=args.proxy, worker=worker, save_artifacts=not args.no_artifacts,
                      account=args.account) as crawler:
                 crawler.usage_cap = args.usage_cap
+                if args.require_login:
+                    crawler.requires_login = True
                 # run_no 바깥 루프: 같은 쿼리를 연달아 묻지 않도록 회차별로 한 바퀴씩
                 for run_no in range(1, args.runs + 1):
                     for q in batch_queries:

@@ -129,6 +129,9 @@ group by 1,2,3,4,5;
   ```
   세션마다 실제 나가는 IP를 확인해 `settings.proxy`·`settings.exit_ip`에 남긴다. 터널이 끊기면 Chromium은 직접 연결로 돌아가지 않고 실패하며, 5번 연속 실패하면 채널을 멈춘다.
 
+- **모니터**: `.venv/bin/python scripts/monitor.py` (htop 비슷한 화면, q 종료, `--once`는 한 번 출력). 채널별 진행·현재 반복 회차·속도·ETA·브라우저 수·러너 상태·마지막 오류와 Claude 계정별 사용량(크롤러가 남기는 `data/state/claude_usage.json`)을 보여 준다. 서버에서는 `tmux attach -r -t geo-monitor`로 띄워 둔 화면을 본다.
+- ChatGPT를 로그인 계정으로만 측정할 때는 `--require-login`을 붙인다. 세션이 없거나 답변 도중 풀리면 채널을 멈추고 비로그인 응답을 저장하지 않는다.
+
 ### 2. 크롤러 밖에서 얻은 결과 기록 (API·수동)
 
 `crawler.store.Store.save_response(ResponseRecord(...))`를 쓰면 응답·인용·fanout·언급이 한 트랜잭션으로 저장되고, fanout 쿼리도 `queries`에 upsert된다. 직접 SQL로 넣을 때도 같은 순서를 따른다: `responses` → fanout `queries`(`origin='fanout'`, `parent_query_id`) → `response_fanouts` → `citations` → `response_mentions`.

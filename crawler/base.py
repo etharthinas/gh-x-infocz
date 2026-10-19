@@ -73,7 +73,7 @@ class PersonalizationError(BlockedError):
     """메모리·맞춤 지침 등 답변을 바꿀 수 있는 계정 설정이 켜져 있음. 꺼야 측정할 수 있으므로 채널을 중단한다."""
 
 
-class NotLoggedInError(CrawlerError):
+class NotLoggedInError(BlockedError):
     """로그인 세션 만료. `python -m crawler login <engine>`으로 다시 로그인."""
 
 

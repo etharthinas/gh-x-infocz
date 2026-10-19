@@ -146,6 +146,8 @@ class ChatGPTCrawler(BaseCrawler):
             elif not existing.snippet and c.snippet:
                 existing.snippet = c.snippet
 
+        if getattr(self, "_session_logged_in", False) and not self.is_logged_in(page):
+            raise BlockedError("chatgpt: 답변 도중 로그인 세션 만료 — 쿠키를 다시 넣은 뒤 재실행")
         model = turn.get_attribute("data-message-model-slug") or net["model"]
         # Plus 한도를 넘기면 작은 모델로 조용히 바뀐다. 다른 모델 응답이 섞이지 않게 저장하지 않고 채널을 멈춘다
         if model and self.is_logged_in(page):
