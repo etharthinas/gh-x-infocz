@@ -21,7 +21,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from playwright.sync_api import Page
 
-from ..base import BaseCrawler, PersonalizationError
+from ..base import BaseCrawler, BlockedError, PersonalizationError
 from ..models import CapturedResponse, Citation, Extraction, Query
 
 _INPUT = "#prompt-textarea:visible, div.ProseMirror[contenteditable=true]:visible, textarea[name=prompt]:visible"
@@ -48,6 +48,12 @@ _PERSONALIZATION_JS = """async () => {
         instructions: await get('/backend-api/user_system_messages'),
         memories: await get('/backend-api/memories?include_memory_entries=false'),
     };
+}"""
+_CONVERSATION_ID = re.compile(r"/c/([0-9a-f-]{36})")
+_FETCH_CONVERSATION_JS = """async id => {
+    const s = await (await fetch('/api/auth/session')).json();
+    const r = await fetch('/backend-api/conversation/' + id, {headers: {Authorization: 'Bearer ' + s.accessToken}});
+    return r.ok ? r.json() : null;
 }"""
 _CONVERSATION_URL = re.compile(r"/backend-api/conversation/[0-9a-f-]{36}(\?|$)")
 # 답변 안 인용 표식: DIL Cite refs·fallbackMarkdown의 citeturn928182search4 → search_result_groups의 ref_id
@@ -76,6 +82,9 @@ class ChatGPTCrawler(BaseCrawler):
     answer_timeout_s = 240.0
 
     def open_fresh(self, page: Page, query: Query) -> None:
+        # 로그인으로 시작한 세션이 중간에 풀리면 비로그인 응답이 섞인다 → 채널 중단 (쿠키를 다시 넣어야 한다)
+        if getattr(self, "_session_logged_in", False) and not self.is_logged_in(page):
+            raise BlockedError("chatgpt: 로그인 세션 만료 — 쿠키를 다시 내보내 import_cookies.sh로 넣은 뒤 재실행")
         # 임시 채팅은 로그인 상태에서만 의미가 있다 (비로그인은 원래 기록이 없음)
         url = self.start_url + ("?temporary-chat=true" if self.is_logged_in(page) else "")
         page.goto(url, wait_until="domcontentloaded")
@@ -112,8 +121,12 @@ class ChatGPTCrawler(BaseCrawler):
         events = [e for c in captured if c.status == 200 and not _CONVERSATION_URL.search(c.url)
                   for e in _json_lines(c.body)]
         net = _parse_events(events)
-        trees = [c.body for c in captured if c.status == 200 and _CONVERSATION_URL.search(c.url)]
-        tree = _parse_conversation(json.loads(trees[-1])) if trees else None
+        trees = [json.loads(c.body) for c in captured if c.status == 200 and _CONVERSATION_URL.search(c.url)]
+        if not trees and self.is_logged_in(page) and (m := _CONVERSATION_ID.search(page.url)):
+            # 검색 없는 짧은 답변은 프런트가 대화 JSON을 받지 않는다 → 직접 받는다
+            if fetched := page.evaluate(_FETCH_CONVERSATION_JS, m.group(1)):
+                trees.append(fetched)
+        tree = _parse_conversation(trees[-1]) if trees else None
         if tree:
             net["citations"] += tree["citations"]
             net["model"] = net["model"] or tree["model"]
@@ -134,6 +147,11 @@ class ChatGPTCrawler(BaseCrawler):
                 existing.snippet = c.snippet
 
         model = turn.get_attribute("data-message-model-slug") or net["model"]
+        # Plus 한도를 넘기면 작은 모델로 조용히 바뀐다. 다른 모델 응답이 섞이지 않게 저장하지 않고 채널을 멈춘다
+        if model and self.is_logged_in(page):
+            self._session_model = getattr(self, "_session_model", None) or model
+            if model != self._session_model:
+                raise BlockedError(f"chatgpt: 모델이 {self._session_model} → {model}로 바뀜 (사용량 한도) — 잠시 중단")
         return Extraction(
             response_text=text,
             answer_present=bool(text),
@@ -151,6 +169,7 @@ class ChatGPTCrawler(BaseCrawler):
         return {"logged_in": logged_in, "temporary_chat": logged_in}
 
     def check_personalization(self, page: Page) -> dict[str, Any]:
+        self._session_logged_in = self.is_logged_in(page)
         if not self.is_logged_in(page):
             return {"logged_in": False}
         data = page.evaluate(_PERSONALIZATION_JS)
