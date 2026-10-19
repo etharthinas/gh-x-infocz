@@ -13,6 +13,7 @@ API가 아니라 실제 웹 UI(로그인 세션·locale·검색 UI 그대로)로
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import random
@@ -104,6 +105,7 @@ class BaseCrawler(ABC):
         max_raw_body_chars: int = 100_000,
         proxy: str | None = None,  # 예: socks5://127.0.0.1:1080 (맥북 역방향 SSH 터널)
         worker: int = 0,  # 병렬 실행 시 워커 번호. 0이 아니면 프로필 복사본을 쓴다
+        save_artifacts: bool = True,  # False면 성공한 실행의 증거 파일을 남기지 않는다 (DB에 다 있다). 실패는 항상 남긴다
     ):
         self.store = store
         self.matcher = matcher
@@ -111,6 +113,7 @@ class BaseCrawler(ABC):
         self.headless = headless
         self.browser_channel = browser_channel
         self.proxy = proxy
+        self.save_artifacts = save_artifacts
         self.worker = worker
         self.base_profile_dir = data_dir / "profiles" / self.engine
         # 같은 프로필 디렉터리를 두 브라우저가 동시에 열 수 없어 워커마다 복사본을 쓴다
@@ -270,7 +273,7 @@ class BaseCrawler(ABC):
             self._save_artifacts(page, artifact_base.with_name(artifact_base.name + "_FAILED"), None, [])
             raise CrawlerError(f"{self.engine} q{query.id} r{run_no}: {e!r}") from e
 
-        artifacts = self._save_artifacts(page, artifact_base, extraction, captured)
+        artifacts = self._save_artifacts(page, artifact_base, extraction, captured) if self.save_artifacts else {}
         record = self._build_record(
             query, batch=batch, run_no=run_no, executed_at=executed_at, page=page,
             extraction=extraction, captured=captured, artifacts=artifacts,
@@ -423,25 +426,29 @@ class BaseCrawler(ABC):
     def _save_artifacts(
         self, page: Page, base: Path, extraction: Extraction | None, captured: list[CapturedResponse]
     ) -> dict[str, str]:
-        """증거 보관: 전체 스크린샷, 페이지 HTML, 네트워크 원문. 실패해도 실행은 계속."""
+        """증거 보관: 전체 스크린샷(JPEG), 페이지 HTML(gzip), 답변 HTML, 네트워크 원문. 실패해도 실행은 계속.
+
+        응답 8만 건 규모라 PNG·원본 HTML(건당 ~1.3MB)로는 디스크가 버티지 못해 압축해서 남긴다 (건당 ~0.3MB).
+        """
         paths: dict[str, str] = {}
-        try:
-            page.screenshot(path=f"{base}.png", full_page=True)
-            paths["screenshot"] = f"{base}.png"
-        except Exception as e:
-            log.warning("screenshot 실패: %r", e)
-        try:
-            Path(f"{base}.html").write_text(page.content(), encoding="utf-8")
-            paths["html"] = f"{base}.html"
-        except Exception as e:
-            log.warning("html 저장 실패: %r", e)
+
+        def save(key: str, path: str, write: Callable[[], None]) -> None:
+            try:  # 디스크가 차도 측정(DB 저장)은 계속한다
+                write()
+                paths[key] = path
+            except Exception as e:
+                log.warning("%s 저장 실패: %r", key, e)
+
+        save("screenshot", f"{base}.jpg",
+             lambda: page.screenshot(path=f"{base}.jpg", full_page=True, type="jpeg", quality=60))
+        save("html", f"{base}.html.gz",
+             lambda: Path(f"{base}.html.gz").write_bytes(gzip.compress(page.content().encode("utf-8"))))
         if extraction and extraction.response_html:
-            Path(f"{base}.answer.html").write_text(extraction.response_html, encoding="utf-8")
-            paths["answer_html"] = f"{base}.answer.html"
+            save("answer_html", f"{base}.answer.html",
+                 lambda: Path(f"{base}.answer.html").write_text(extraction.response_html, encoding="utf-8"))
         if captured:
-            Path(f"{base}.network.json").write_text(
-                json.dumps([c.__dict__ for c in captured], ensure_ascii=False), encoding="utf-8")
-            paths["network"] = f"{base}.network.json"
+            save("network", f"{base}.network.json.gz", lambda: Path(f"{base}.network.json.gz").write_bytes(
+                gzip.compress(json.dumps([c.__dict__ for c in captured], ensure_ascii=False).encode("utf-8"))))
         return paths
 
     def _build_record(

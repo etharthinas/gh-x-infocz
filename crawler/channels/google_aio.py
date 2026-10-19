@@ -15,8 +15,9 @@ answer_present=False로 기록한다 (노출률 분모). 같은 쿼리도 실행
 from __future__ import annotations
 
 import logging
+import random
 from typing import Any
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import Page
 
@@ -61,12 +62,14 @@ class GoogleAIOCrawler(BaseCrawler):
     start_url = "https://www.google.com/"
     requires_login = False
     answer_timeout_s = 90.0
-    delay_between_runs_s = (15.0, 35.0)  # 검색은 /sorry 차단이 빠르다
+    # 검색은 /sorry 차단이 빠르다. 결과 URL 직행·짧은 간격은 서버 IP뿐 아니라 가정용 IP도 바로 막혔다 (2026-10)
+    delay_between_runs_s = (60.0, 120.0)
 
     def open_fresh(self, page: Page, query: Query) -> None:
-        # 검색창에 입력하는 대신 결과 URL로 바로 간다 (자동완성·입력 지연 없이 같은 결과)
-        page.goto(f"https://www.google.com/search?q={quote(query.text)}&hl={self.language}",
-                  wait_until="domcontentloaded")
+        # 결과 URL로 바로 가면 자동화로 보여 /sorry가 빨리 뜬다. 사람처럼 홈에서 검색창에 입력한다
+        page.goto(f"https://www.google.com/?hl={self.language}", wait_until="domcontentloaded")
+        page.locator(_SEARCH_BOX).first.wait_for(state="visible", timeout=30_000)
+        page.wait_for_timeout(random.randint(1500, 4000))
 
     def is_logged_in(self, page: Page) -> bool:
         return page.locator("a[href*='accounts.google.com/ServiceLogin']").count() == 0
@@ -79,7 +82,13 @@ class GoogleAIOCrawler(BaseCrawler):
         return {"logged_in": False}
 
     def submit(self, page: Page, query: Query) -> None:
-        page.locator(_SEARCH_BOX).first.wait_for(state="attached", timeout=30_000)
+        box = page.locator(_SEARCH_BOX).first
+        box.click()
+        page.keyboard.type(query.text, delay=random.randint(60, 140))  # 한 글자씩 (insert_text는 붙여넣기처럼 보인다)
+        page.wait_for_timeout(random.randint(500, 1500))
+        page.keyboard.press("Enter")
+        page.wait_for_load_state("domcontentloaded")
+        self._raise_if_blocked(page)
 
     def wait_until_done(self, page: Page) -> None:
         heading = page.locator(f"{_ROOT} [role=heading]").filter(has_text=_HEADINGS[0]).or_(

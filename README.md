@@ -118,6 +118,7 @@ group by 1,2,3,4,5;
 - 채널(엔진별 크롤러)은 `crawler/channels/`에 `BaseCrawler`를 상속해 `submit` / `wait_until_done` / `extract`만 구현한다. `engine` 값은 `engines.code`와 같아야 한다. 저장·엔티티 매칭·증거 보관은 `BaseCrawler`가 맡는다.
 - 미국 시장(영문) 측정은 locale만 바뀌고 IP 지역은 그대로다. VPN을 쓰면 `settings`에 남긴다.
 - **병렬 실행**: `--workers N`이면 쿼리를 N개 프로세스로 나눠 돈다 (Playwright sync API는 스레드 공유가 안 된다). 워커 1번부터는 `data/profiles/<engine>-wN`에 프로필 복사본을 만들어 쓴다. 다시 로그인했으면 `profiles/<engine>-w*`를 지워야 새 세션이 복사된다. 로그인 채널(ChatGPT·Claude)은 워커가 같은 계정 사용량 한도를 나눠 쓰므로 2개 정도로 둔다.
+- **증거 파일**: 기본은 실행마다 스크린샷(JPEG)·페이지 HTML(gzip)을 `data/artifacts/`에 남긴다. 응답·인용·원문은 DB에 있으므로 대량 측정은 `--no-artifacts`로 돌린다 (실패한 실행만 남는다). 디스크가 10GB라 전량 측정에 증거 파일을 남기면 버티지 못한다.
 - **프록시**: `--proxy socks5://127.0.0.1:1080`. 서버 IP가 Google에서 `/sorry` 차단을 받으면 화면 있는 PC(맥북)를 출구로 쓴다. PC에서 역방향 동적 포워딩을 열면 서버의 127.0.0.1:1080에 그 PC를 거쳐 나가는 SOCKS 프록시가 생긴다:
   ```bash
   caffeinate -is ssh -N -R 1080 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes collector@<server>   # PC (OpenSSH 7.6+)

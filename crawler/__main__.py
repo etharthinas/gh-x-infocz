@@ -67,6 +67,8 @@ def main() -> None:
     run.add_argument("--workers", type=int, default=1,
                      help="병렬 프로세스 수. 쿼리를 나눠 맡고, 워커마다 브라우저 프로필 복사본(profiles/<engine>-wN)을 쓴다")
     run.add_argument("--shard", help=argparse.SUPPRESS)  # 'i/n' — --workers가 내부적으로 붙인다
+    run.add_argument("--no-artifacts", action="store_true",
+                     help="성공한 실행의 스크린샷·HTML을 저장하지 않는다 (응답·인용·원문은 DB에 있다). 실패한 실행은 저장")
     run.add_argument("--proxy", help="브라우저 프록시, 예: socks5://127.0.0.1:1080. settings.proxy·exit_ip에 남는다")
     args = parser.parse_args()
 
@@ -102,7 +104,7 @@ def main() -> None:
                 continue
             with cls(store, matcher, language=language, headless=args.headless,
                      browser_channel=args.browser_channel, data_dir=args.data_dir,
-                     proxy=args.proxy, worker=worker) as crawler:
+                     proxy=args.proxy, worker=worker, save_artifacts=not args.no_artifacts) as crawler:
                 # run_no 바깥 루프: 같은 쿼리를 연달아 묻지 않도록 회차별로 한 바퀴씩
                 for run_no in range(1, args.runs + 1):
                     for q in batch_queries:
