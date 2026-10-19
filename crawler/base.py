@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
+import psycopg
 from playwright.sync_api import BrowserContext, Locator, Page, Playwright, Request, Response, sync_playwright
 
 from .entities import EntityMatcher
@@ -105,6 +106,7 @@ class BaseCrawler(ABC):
         max_raw_body_chars: int = 100_000,
         proxy: str | None = None,  # 예: socks5://127.0.0.1:1080 (맥북 역방향 SSH 터널)
         worker: int = 0,  # 병렬 실행 시 워커 번호. 0이 아니면 프로필 복사본을 쓴다
+        account: str | None = None,  # 같은 엔진의 다른 로그인 계정. 프로필이 profiles/<engine>-<account>로 분리된다
         save_artifacts: bool = True,  # False면 성공한 실행의 증거 파일을 남기지 않는다 (DB에 다 있다). 실패는 항상 남긴다
     ):
         self.store = store
@@ -115,9 +117,11 @@ class BaseCrawler(ABC):
         self.proxy = proxy
         self.save_artifacts = save_artifacts
         self.worker = worker
-        self.base_profile_dir = data_dir / "profiles" / self.engine
+        self.account = account
+        name = f"{self.engine}-{account}" if account else self.engine
+        self.base_profile_dir = data_dir / "profiles" / name
         # 같은 프로필 디렉터리를 두 브라우저가 동시에 열 수 없어 워커마다 복사본을 쓴다
-        self.profile_dir = self.base_profile_dir if worker == 0 else data_dir / "profiles" / f"{self.engine}-w{worker}"
+        self.profile_dir = self.base_profile_dir if worker == 0 else data_dir / "profiles" / f"{name}-w{worker}"
         self.artifacts_root = data_dir / "artifacts"
         self.max_raw_body_chars = max_raw_body_chars
 
@@ -279,7 +283,12 @@ class BaseCrawler(ABC):
             extraction=extraction, captured=captured, artifacts=artifacts,
             elapsed_s=round(time.monotonic() - started, 1),
         )
-        response_id = self.store.save_response(record) if self.store else None
+        try:
+            response_id = self.store.save_response(record) if self.store else None
+        except psycopg.errors.UniqueViolation:
+            # 다른 계정·프로세스가 같은 (batch, query, run_no)를 방금 저장함 (--reverse로 엇갈려 돌 때 마주치는 지점)
+            log.info("skip %s q%s r%s (다른 프로세스가 먼저 저장)", self.engine, query.id, run_no)
+            return None
         log.info("saved %s q%s r%s → response %s (infocz=%s rank=%s, %d citations, %d fanouts)",
                  self.engine, query.id, run_no, response_id, record.infocz_mentioned, record.infocz_rank,
                  len(record.citations), len(record.fanout_queries))
@@ -468,6 +477,7 @@ class BaseCrawler(ABC):
             "user_agent": page.evaluate("navigator.userAgent"),
             "logged_in": self.is_logged_in(page) if self.requires_login else None,
             "personalization": self._personalization,
+            "account": self.account,
             "proxy": self.proxy,
             "exit_ip": self._exit_ip,
             **self.extra_settings(page),

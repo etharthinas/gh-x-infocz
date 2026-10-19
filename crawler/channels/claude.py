@@ -21,7 +21,7 @@ from typing import Any
 
 from playwright.sync_api import Page
 
-from ..base import BaseCrawler, CrawlerError, PersonalizationError
+from ..base import BaseCrawler, BlockedError, CrawlerError, PersonalizationError
 from ..models import CapturedResponse, Citation, Extraction, Query
 
 _INPUT = ("div[contenteditable=true][data-testid=chat-input]:visible, div.ProseMirror[contenteditable=true]:visible, "
@@ -41,8 +41,14 @@ class ClaudeCrawler(BaseCrawler):
     answer_timeout_s = 300.0
     delay_between_runs_s = (15.0, 30.0)  # 사용량 제한이 빡빡하다
 
+    usage_cap: float | None = None  # --usage-cap: 이 %를 넘으면 계정을 멈춘다 (다른 용도로도 쓰는 계정을 남겨 두기 위해)
+
     def open_fresh(self, page: Page, query: Query) -> None:
         page.goto(self.start_url, wait_until="domcontentloaded")
+        if self.usage_cap is not None and "/login" not in page.url:
+            usage = self._usage(page)
+            if over := {k: v for k, v in usage.items() if v is not None and v >= self.usage_cap}:
+                raise BlockedError(f"claude: 사용량 {over}% ≥ 상한 {self.usage_cap}% — 리셋 뒤 다시 시도")
         if "/login" not in page.url:
             page.locator(_INPUT).first.wait_for(state="visible", timeout=30_000)
             # 쿠키 동의 배너가 입력창 클릭을 가로막는다 (새 프로필·워커 복사본). 필수 쿠키만 남기고 닫는다
@@ -127,7 +133,12 @@ class ClaudeCrawler(BaseCrawler):
 
     def extra_settings(self, page: Page) -> dict[str, Any]:
         return {"model_ui": self._model_ui(page), "incognito": "incognito" in page.url,
-                "web_search": getattr(self, "_web_search", None)}
+                "web_search": getattr(self, "_web_search", None), "usage_cap": self.usage_cap}
+
+    def _usage(self, page: Page) -> dict[str, float | None]:
+        """계정 사용량 % (설정 > 사용량 화면과 같은 값): 5시간 세션 한도, 주간 한도."""
+        data = self._get(page, f"/api/organizations/{self._org(page)}/usage")
+        return {k: (data.get(k) or {}).get("utilization") for k in ("five_hour", "seven_day")}
 
     # ---------- 내부 ----------
     @staticmethod

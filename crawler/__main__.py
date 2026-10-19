@@ -50,6 +50,7 @@ def main() -> None:
     common.add_argument("engine")
     common.add_argument("--browser-channel", help="'chrome'이면 설치된 Chrome 사용")
     common.add_argument("--data-dir", type=Path, default=Path("data"))
+    common.add_argument("--account", help="같은 엔진의 다른 로그인 계정 이름 (예: acct1). 프로필이 profiles/<engine>-<account>로 분리된다")
 
     login = sub.add_parser("login", parents=[common])
     login.add_argument("--cookies", type=Path,
@@ -69,6 +70,9 @@ def main() -> None:
     run.add_argument("--shard", help=argparse.SUPPRESS)  # 'i/n' — --workers가 내부적으로 붙인다
     run.add_argument("--no-artifacts", action="store_true",
                      help="성공한 실행의 스크린샷·HTML을 저장하지 않는다 (응답·인용·원문은 DB에 있다). 실패한 실행은 저장")
+    run.add_argument("--reverse", action="store_true", help="쿼리를 역순으로. 같은 배치를 두 번째 계정으로 동시에 돌릴 때")
+    run.add_argument("--usage-cap", type=float,
+                     help="Claude: 5시간·주간 사용량이 이 %%를 넘으면 그 계정을 멈춘다 (예: 50). 러너가 나중에 다시 시도한다")
     run.add_argument("--proxy", help="브라우저 프록시, 예: socks5://127.0.0.1:1080. settings.proxy·exit_ip에 남는다")
     args = parser.parse_args()
 
@@ -80,7 +84,7 @@ def main() -> None:
 
     if args.cmd == "login":  # DB 불필요
         with cls(None, EntityMatcher([]), headless=bool(args.cookies), browser_channel=args.browser_channel,
-                 data_dir=args.data_dir) as crawler:
+                 data_dir=args.data_dir, account=args.account) as crawler:
             if args.cookies:
                 log.info("%s: 쿠키 %d개 저장, 로그인 확인됨", args.engine, crawler.import_cookies(args.cookies))
             else:
@@ -96,6 +100,8 @@ def main() -> None:
         matcher = EntityMatcher(store.load_entities())
         queries = store.get_queries(origin=args.origin, market=args.market, language=args.language,
                                     ids=args.ids, limit=args.limit)[worker::shards]
+        if args.reverse:  # 같은 배치를 다른 계정으로 동시에 돌릴 때 반대쪽 끝부터 (겹침 최소화)
+            queries.reverse()
         failures = 0
         # locale은 브라우저 실행 옵션이라 언어별로 세션을 나눈다
         for language in ("ko", "en"):
@@ -104,7 +110,9 @@ def main() -> None:
                 continue
             with cls(store, matcher, language=language, headless=args.headless,
                      browser_channel=args.browser_channel, data_dir=args.data_dir,
-                     proxy=args.proxy, worker=worker, save_artifacts=not args.no_artifacts) as crawler:
+                     proxy=args.proxy, worker=worker, save_artifacts=not args.no_artifacts,
+                     account=args.account) as crawler:
+                crawler.usage_cap = args.usage_cap
                 # run_no 바깥 루프: 같은 쿼리를 연달아 묻지 않도록 회차별로 한 바퀴씩
                 for run_no in range(1, args.runs + 1):
                     for q in batch_queries:
