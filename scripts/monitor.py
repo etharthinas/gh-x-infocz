@@ -174,7 +174,7 @@ def render(stats: dict | None, procs: dict, sysinfo: dict, usage: dict, batch: s
                   2 if s["disk_free"] < 0.5 or s["load"][0] > 2 * s["cpus"] else 0))
     lines.append(("", 0))
     lines.append((f"{'CHANNEL':<18}{'DONE':>14}{'%':>7}{'REP':>9}{'/15m':>6}{'/h':>6}{'ETA':>8}"
-                  f"{'LAST':>7}{'BROWSERS':>10}  RUNNER / LAST ERROR", 1))
+                  f"{'LAST':>7}  {'BROWSERS':<16}RUNNER / LAST ERROR", 1))
     for engine in ENGINES:
         e = (stats or {}).get("engines", {}).get(engine, {})
         target = stats["target"] if stats else 0
@@ -194,7 +194,7 @@ def render(stats: dict | None, procs: dict, sysinfo: dict, usage: dict, batch: s
         style = 3 if state == "active" else 2 if state == "stopped" else 4
         lines.append((f"{engine:<18}{done:>7,}/{target:<6,}{done * 100 / max(target, 1):>6.1f}%{rep:>9}"
                       f"{e.get('r15', 0):>6}{rate_h:>6}{fmt_eta(eta):>8}{fmt_ago(e.get('last'), now):>7}"
-                      f"{btxt:>10}  [{state}] {runner}{err_txt}", style))
+                      f"  {btxt:<16}[{state}] {runner}{err_txt}", style))
     lines.append(("", 0))
 
     # Claude 계정
