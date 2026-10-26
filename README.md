@@ -1,4 +1,3 @@
-나림
 # gh-x-infocz
 
 인포시즈 GEO 측정 프로젝트 (그로스해커스 26.4Q-S). 잠재 고객이 **비브랜드 질문**을 했을 때 AI 답변(ChatGPT·Perplexity·Gemini·Google AI Overviews·네이버 AI 브리핑·Claude)에 인포시즈가 언급·인용되는지 측정한다.
