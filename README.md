@@ -19,7 +19,10 @@ scripts/setup_db.py     빈 DB에 스키마 + 참조 데이터 생성
 scripts/import_queries.py   TSV → queries (upsert)
 scripts/export_queries.py   queries → TSV (stdout, 백업·검토용)
 crawler/                웹 UI 기반 측정 크롤러 (Playwright) → responses 등에 저장
-data/                   크롤러 로그인 프로필·증거 파일 (gitignore)
+db/analysis.sql         분석 테이블·뷰 (pages, page_labels, response_labels, v_* 뷰). 멱등이라 setup_db.py가 매번 적용
+analysis/               인용 페이지 수집 · LLM 라벨링 · 집계 CSV (`python -m analysis --help`)
+tests/test_analysis.py  분석 코드의 외부 호출 없는 점검 (`python tests/test_analysis.py`)
+data/                   크롤러 로그인 프로필·증거 파일, 분석 CSV 출력 (gitignore)
 ```
 
 **쿼리의 원본은 DB다.** 저장소에는 쿼리 파일이 없다. 필요하면 `export_queries.py`로 덤프한다.
@@ -136,6 +139,24 @@ group by 1,2,3,4,5;
 ```
 
 `--reset`은 쿼리·응답·인용을 모두 지운다. 사용자 확인 없이 실행하지 않는다.
+
+### 6. 분석 (인용 페이지 수집 → 라벨링 → 집계)
+
+`.env`에 `ANTHROPIC_API_KEY`가 필요하다. 분석 대상은 `--batch`(기본 `baseline-2026-10`)로 정한다. 단계마다 이미 처리한 항목은 건너뛰므로 중단 후 다시 실행해도 된다.
+
+```bash
+.venv/bin/python scripts/setup_db.py                       # 분석 테이블·뷰 적용 (기존 데이터는 그대로)
+.venv/bin/python -m analysis fetch --limit 200 --random    # 파일럿 → 인용 URL 본문 수집 + 규칙 기반 특징 (많이 인용된 순이 기본)
+.venv/bin/python -m analysis overlap                       # 질문-페이지 정합성 (citations.query_overlap)
+.venv/bin/python -m analysis label-pages --limit 100       # 소량은 직접 호출, 전체는 --api-batch (Batches API, 비용 50%)
+.venv/bin/python -m analysis label-responses --limit 100   # 감정·키워드·서술 정확도(responses.accuracy는 비어 있을 때만 채움)
+.venv/bin/python -m analysis report                        # data/analysis/*.csv
+```
+
+- 분류 값 목록과 프롬프트는 `analysis/label.py`에 있다. 바꾸면 `VERSION`을 올려야 기존 항목을 다시 라벨링한다 (조회는 가장 최근 라벨).
+- 출처 유형(`own_brand` / `competitor_brand` / `true_third_party`)은 열이 아니라 `v_citations`에서 `entities.role`로 계산한다.
+- 수집하지 못한 URL(403, PDF, 연결 실패)은 `pages.http_status`만 남고 라벨이 없다. 집계에서는 "미분류"이며, 비율은 `report`의 `label_coverage.csv`로 확인한다.
+- `pages.text`는 앞 4,000자만 보관한다 (DB 용량).
 
 ## 분석 예시
 
