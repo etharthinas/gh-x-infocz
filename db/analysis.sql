@@ -53,7 +53,7 @@ create table if not exists analysis.page_label (
     visual         text check (visual in ('text_only', 'image', 'table', 'diagram', 'infographic', 'video', 'screenshot')),
     entity_focus   text check (entity_focus in ('self', 'competitor', 'ecosystem', 'customer', 'none')),
     self_authored  boolean,
-    publisher      text check (publisher in ('media', 'brand', 'community', 'government', 'academic')),
+    publisher      text check (publisher in ('media', 'brand', 'community', 'government', 'academic', 'other')),
     language       text check (language in ('ko', 'en', 'ja', 'zh', 'other')),
     label_version  text not null default 'v1',
     label_model    text,                              -- rule 이면 null 가능, llm 이면 모델명
