@@ -19,7 +19,8 @@ scripts/setup_db.py     빈 DB에 스키마 + 참조 데이터 생성
 scripts/import_queries.py   TSV → queries (upsert)
 scripts/export_queries.py   queries → TSV (stdout, 백업·검토용)
 crawler/                웹 UI 기반 측정 크롤러 (Playwright) → responses 등에 저장
-db/analysis.sql         분석 테이블·뷰 (pages, page_labels, response_labels, v_* 뷰). 멱등이라 setup_db.py가 매번 적용
+db/crawl_ext.sql        크롤링 확장 테이블·뷰 (pages, page_labels, response_labels, v_* 뷰). 멱등이라 setup_db.py가 매번 적용
+db/analysis.sql        분석용 분류 축 스키마 `analysis` (페이지·도메인·인용·응답 라벨, 자동 축, 분석 뷰). crawl_ext.sql 다음에 적용
 analysis/               인용 페이지 수집 · LLM 라벨링 · 집계 CSV (`python -m analysis --help`)
 tests/test_analysis.py  분석 코드의 외부 호출 없는 점검 (`python tests/test_analysis.py`)
 data/                   크롤러 로그인 프로필·증거 파일, 분석 CSV 출력 (gitignore)

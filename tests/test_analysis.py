@@ -47,7 +47,7 @@ def test_overlap():
 
 
 def test_label_values_match_sql():
-    sql = (ROOT / "db" / "analysis.sql").read_text(encoding="utf-8")
+    sql = (ROOT / "db" / "crawl_ext.sql").read_text(encoding="utf-8")
     for name, values in [("page_form", label.PAGE_FORMS), ("persona", label.PERSONAS), ("tone", label.TONES),
                          ("publisher_kind", label.PUBLISHER_KINDS), ("answer_form", label.ANSWER_FORMS),
                          ("stance", label.STANCES)]:
