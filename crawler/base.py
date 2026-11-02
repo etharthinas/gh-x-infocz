@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
-from playwright.sync_api import BrowserContext, Locator, Page, Playwright, Response, sync_playwright
+from playwright.sync_api import BrowserContext, Locator, Page, Playwright, Request, Response, sync_playwright
 
 from .entities import EntityMatcher
 from .models import CapturedResponse, Citation, Extraction, Query
@@ -64,6 +64,10 @@ class CrawlerError(Exception):
 
 class BlockedError(CrawlerError):
     """캡차·봇 차단. 같은 채널을 계속 두드리면 악화되므로 러너는 해당 채널을 중단한다."""
+
+
+class PersonalizationError(BlockedError):
+    """메모리·맞춤 지침 등 답변을 바꿀 수 있는 계정 설정이 켜져 있음. 꺼야 측정할 수 있으므로 채널을 중단한다."""
 
 
 class NotLoggedInError(CrawlerError):
@@ -112,6 +116,7 @@ class BaseCrawler(ABC):
         self.page: Page | None = None
         self._pending: list[Response] = []
         self._capture_res = [re.compile(p) for p in self.capture_patterns]
+        self._personalization: dict[str, Any] | None = None  # 세션 첫 실행에서 확인
 
     # ======================================================================
     # 채널이 구현할 훅
@@ -145,6 +150,14 @@ class BaseCrawler(ABC):
         """채널별 실행 조건 (모델 선택기 값, 웹검색 토글 등) → responses.settings."""
         return {}
 
+    def check_personalization(self, page: Page) -> dict[str, Any]:
+        """세션마다 한 번, 답변을 사용자별로 바꾸는 계정 설정(메모리, 대화 기록 참조, 맞춤 지침 등)을 확인.
+
+        켜진 항목이 있으면 PersonalizationError. 확인한 값은 responses.settings.personalization에 남는다.
+        로그인하지 않은 채널은 맞춤화가 없으므로 기본 구현은 빈 dict.
+        """
+        return {}
+
     # ======================================================================
     # 브라우저 수명주기
     # ======================================================================
@@ -159,7 +172,7 @@ class BaseCrawler(ABC):
             args=["--disable-blink-features=AutomationControlled"],
             **LOCALES[self.language],
         )
-        self.context.on("response", self._on_response)  # 모든 탭에 적용
+        self.context.on("requestfinished", self._on_request_finished)  # 모든 탭에 적용
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         return self
 
@@ -176,6 +189,36 @@ class BaseCrawler(ABC):
         wait()
         if not self.is_logged_in(self.page):
             raise NotLoggedInError(f"{self.engine}: 로그인 상태가 확인되지 않음")
+
+    def import_cookies(self, path: Path) -> int:
+        """화면이 없는 서버용 로그인: 다른 PC 브라우저에서 내보낸 쿠키를 프로필에 넣는다.
+
+        Playwright storage_state JSON({"cookies": [...]}) 또는 Cookie-Editor 류 확장의 JSON 배열을 받는다.
+        """
+        assert self.context and self.page
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = data["cookies"] if isinstance(data, dict) else data
+        same_site = {"no_restriction": "None", "unspecified": "Lax", "lax": "Lax", "strict": "Strict", "none": "None"}
+        cookies = []
+        for c in raw:
+            cookie: dict[str, Any] = {
+                "name": c["name"], "value": c["value"], "domain": c["domain"], "path": c.get("path", "/"),
+                "secure": bool(c.get("secure", False)), "httpOnly": bool(c.get("httpOnly", False)),
+            }
+            expires = c.get("expires", c.get("expirationDate"))
+            if expires and not c.get("session"):
+                cookie["expires"] = float(expires)
+            if ss := c.get("sameSite"):
+                cookie["sameSite"] = same_site.get(str(ss).lower(), ss)
+            if cookie.get("sameSite") == "None":
+                cookie["secure"] = True
+            cookies.append(cookie)
+        self.context.add_cookies(cookies)
+        self.page.goto(self.start_url, wait_until="domcontentloaded")
+        self.page.wait_for_timeout(5000)
+        if not self.is_logged_in(self.page):
+            raise NotLoggedInError(f"{self.engine}: 쿠키 {len(cookies)}개를 넣었지만 로그인 상태가 확인되지 않음")
+        return len(cookies)
 
     # ======================================================================
     # 실행 (템플릿 메서드)
@@ -198,6 +241,8 @@ class BaseCrawler(ABC):
             self._raise_if_blocked(page)
             if self.requires_login and not self.is_logged_in(page):
                 raise NotLoggedInError(f"{self.engine}: 로그인 필요 (python -m crawler login {self.engine})")
+            if self._personalization is None:
+                self._personalization = self.check_personalization(page)
             self.submit(page, query)
             self.wait_until_done(page)
             self._raise_if_blocked(page)
@@ -281,6 +326,18 @@ class BaseCrawler(ABC):
         return result
 
     @staticmethod
+    def walk_json(obj: Any) -> Any:
+        """중첩 JSON의 모든 dict를 깊이 우선(등장 순서)으로 순회. 포맷이 자주 바뀌는 스트림에서 키로 찾을 때."""
+        stack = [obj]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                yield node
+                stack.extend(reversed(list(node.values())))
+            elif isinstance(node, list):
+                stack.extend(reversed(node))
+
+    @staticmethod
     def parse_sse(body: str) -> list[Any]:
         """text/event-stream 본문 → data: 줄의 JSON 목록 (JSON 아닌 줄은 건너뜀)."""
         events = []
@@ -308,9 +365,10 @@ class BaseCrawler(ABC):
         self._pending.clear()
         return self.page
 
-    def _on_response(self, response: Response) -> None:
-        # 핸들러 안에서 본문을 읽으면 스트림 도중이라 잘리므로 객체만 모아 두고 완료 후 읽는다
-        if any(p.search(response.url) for p in self._capture_res):
+    def _on_request_finished(self, request: Request) -> None:
+        # 본문까지 다 받은 요청만 모은다. 열린 채 남는 스트림(WebChannel 등)을 읽으면 끝없이 기다린다.
+        # 핸들러 안에서 읽지 않고 객체만 모아 두었다가 답변 완료 후 읽는다
+        if any(p.search(request.url) for p in self._capture_res) and (response := request.response()):
             self._pending.append(response)
 
     def _collect_captured(self) -> list[CapturedResponse]:
@@ -374,6 +432,7 @@ class BaseCrawler(ABC):
             "browser": self.browser_channel or "chromium",
             "user_agent": page.evaluate("navigator.userAgent"),
             "logged_in": self.is_logged_in(page) if self.requires_login else None,
+            "personalization": self._personalization,
             **self.extra_settings(page),
         }
         raw = {

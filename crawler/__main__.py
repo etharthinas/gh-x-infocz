@@ -25,7 +25,9 @@ def main() -> None:
     common.add_argument("--browser-channel", help="'chrome'이면 설치된 Chrome 사용")
     common.add_argument("--data-dir", type=Path, default=Path("data"))
 
-    sub.add_parser("login", parents=[common])
+    login = sub.add_parser("login", parents=[common])
+    login.add_argument("--cookies", type=Path,
+                       help="화면 없는 서버: 다른 PC에서 내보낸 쿠키 JSON을 프로필에 넣는다 (헤드리스로 실행)")
     run = sub.add_parser("run", parents=[common])
     run.add_argument("--batch", required=True, help="측정 회차 라벨, 예: baseline-2026-10")
     run.add_argument("--runs", type=int, default=3, help="쿼리당 반복 횟수 (run_no 1..N)")
@@ -44,13 +46,17 @@ def main() -> None:
     if cls is None:
         parser.error(f"알 수 없는 engine '{args.engine}'. 등록됨: {sorted(BaseCrawler.registry)}")
 
+    if args.cmd == "login":  # DB 불필요
+        with cls(None, EntityMatcher([]), headless=bool(args.cookies), browser_channel=args.browser_channel,
+                 data_dir=args.data_dir) as crawler:
+            if args.cookies:
+                log.info("%s: 쿠키 %d개 저장, 로그인 확인됨", args.engine, crawler.import_cookies(args.cookies))
+            else:
+                crawler.login()
+        return
+
     with Store() as store:
         matcher = EntityMatcher(store.load_entities())
-        if args.cmd == "login":
-            with cls(store, matcher, browser_channel=args.browser_channel, data_dir=args.data_dir) as crawler:
-                crawler.login()
-            return
-
         queries = store.get_queries(origin=args.origin, market=args.market, language=args.language,
                                     ids=args.ids, limit=args.limit)
         # locale은 브라우저 실행 옵션이라 언어별로 세션을 나눈다

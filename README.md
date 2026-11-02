@@ -18,6 +18,8 @@ scripts/db.py           DB 연결 헬퍼 — 모든 코드는 이걸로 연결
 scripts/setup_db.py     빈 DB에 스키마 + 참조 데이터 생성
 scripts/import_queries.py   TSV → queries (upsert)
 scripts/export_queries.py   queries → TSV (stdout, 백업·검토용)
+scripts/export_cookies.py   (화면 있는 PC) 로그인 → data/cookies/<engine>.json
+scripts/import_cookies.sh   (서버) 쿠키 JSON → 크롤러 프로필
 crawler/                웹 UI 기반 측정 크롤러 (Playwright) → responses 등에 저장
 db/crawl_ext.sql        크롤링 확장 테이블·뷰 (pages, page_labels, response_labels, v_* 뷰). 멱등이라 setup_db.py가 매번 적용
 db/analysis.sql        분석용 분류 축 스키마 `analysis` (페이지·도메인·인용·응답 라벨, 자동 축, 분석 뷰). crawl_ext.sql 다음에 적용
@@ -101,6 +103,20 @@ group by 1,2,3,4,5;
 .venv/bin/python -m crawler run chatgpt --batch baseline-2026-10 --runs 3 --market kr_ax --limit 10
 ```
 
+- 구현된 채널: `chatgpt`(로그인 선택), `claude`(로그인 필수), `gemini`(비로그인 전용).
+- **답변 맞춤화 금지.** 로그인 계정은 ChatGPT 임시 채팅·Claude 시크릿 채팅으로 묻고, 세션 시작 때 계정 설정을 확인해 하나라도 켜져 있으면 `PersonalizationError`로 그 채널을 중단한다. 확인 결과는 `responses.settings.personalization`에 남는다.
+  - ChatGPT: 저장된 메모리 참조(`sunshine`)·채팅 기록 참조(`moonshine`) 꺼짐, 맞춤 지침 비어 있음, 저장된 메모리 0
+  - Claude: 메모리 생성·과거 대화 검색(`enabled_saffron*`, `enabled_melange`) 꺼짐, 개인 선호 지침·저장된 메모리 비어 있음
+  - Gemini: Google 세션은 서버로 옮기면 무효화되고 맞춤화를 확인할 방법도 없어 비로그인으로만 측정한다. 로그인 상태가 감지되면 중단
+- claude.ai는 headless 브라우저를 Cloudflare로 막는다. 서버에서는 `xvfb-run -a .venv/bin/python -m crawler run claude …`처럼 헤드풀로 실행한다.
+- 화면 없는 서버에서는 헤드풀 로그인 대신 화면 있는 PC에서 로그인해 쿠키를 옮긴다 (`data/cookies/`는 커밋 금지, gitignore됨):
+  ```bash
+  python scripts/export_cookies.py claude chatgpt            # PC: 엔진마다 Chrome이 뜨면 로그인 → Enter → data/cookies/<engine>.json
+  scp data/cookies/*.json <server>:gh-x-infocz/data/cookies/
+  scripts/import_cookies.sh                                  # 서버: 프로필에 넣고 로그인 확인 (= python -m crawler login <engine> --cookies …)
+  ```
+  Cookie-Editor 확장으로 내보낸 JSON 배열도 `--cookies`에 그대로 넣을 수 있다. 세션이 만료되면 다시 내보낸다. 헤드풀 실행이 필요하면 `xvfb-run -a`로 감싼다.
+- 엔진별로 얻을 수 있는 것: ChatGPT 비로그인은 인용은 있지만 하위 검색어(fanout)·모델명이 노출되지 않는다. Gemini는 fanout이 없고 `model`에 모드 이름(예: Flash-Lite)을 남긴다. Claude는 검색어·인용·모델을 스트림에서 모두 얻는다.
 - `--batch`는 측정 회차 라벨이다. 같은 `(batch, query, engine, run_no)`는 건너뛰므로 중단 후 다시 실행해도 된다.
 - 채널(엔진별 크롤러)은 `crawler/channels/`에 `BaseCrawler`를 상속해 `submit` / `wait_until_done` / `extract`만 구현한다. `engine` 값은 `engines.code`와 같아야 한다. 저장·엔티티 매칭·증거 보관은 `BaseCrawler`가 맡는다.
 - 미국 시장(영문) 측정은 locale만 바뀌고 IP 지역은 그대로다. VPN을 쓰면 `settings`에 남긴다.
