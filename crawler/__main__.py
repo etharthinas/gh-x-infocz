@@ -124,7 +124,13 @@ def main() -> None:
                     crawler.requires_login = True
                 # run_no 바깥 루프: 같은 쿼리를 연달아 묻지 않도록 회차별로 한 바퀴씩
                 for run_no in range(1, args.runs + 1):
-                    for q in batch_queries:
+                    todo = batch_queries
+                    if not args.no_skip:  # 이미 있는 건 한 번에 걸러 낸다 (다른 레인이 그사이 채운 건 crawler.run이 다시 확인)
+                        done = store.existing_runs(batch=args.batch, engine=args.engine)
+                        todo = [q for q in batch_queries if (q.id, run_no) not in done]
+                        log.info("%s %s r%s: %d개 남음 (%d개 이미 있음)", args.engine, language, run_no,
+                                 len(todo), len(batch_queries) - len(todo))
+                    for q in todo:
                         try:
                             if crawler.run(q, batch=args.batch, run_no=run_no, skip_existing=not args.no_skip):
                                 crawler.pause_between_runs()

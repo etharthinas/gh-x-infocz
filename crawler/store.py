@@ -97,6 +97,13 @@ class Store:
         ).fetchone()
         return row is not None
 
+    def existing_runs(self, *, batch: str, engine: str) -> set[tuple[int, int]]:
+        """이 배치·엔진에서 이미 저장된 (query_id, run_no) 전부 — 재개할 때 한 번에 걸러 내려고"""
+        rows = self.conn.execute(
+            "select query_id, run_no from responses where batch = %s and engine = %s", (batch, engine),
+        ).fetchall()
+        return {(q, r) for q, r in rows}
+
     # ---------- 쓰기 ----------
     def save_response(self, r: ResponseRecord) -> int:
         with self.conn.transaction():
