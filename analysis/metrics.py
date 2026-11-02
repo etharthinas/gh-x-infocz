@@ -27,7 +27,7 @@ def query_overlap(query: str, title: str | None, text: str | None) -> float | No
     return len(q & bigrams(f"{title or ''} {text or ''}")) / len(q)
 
 
-def run(*, batch: str = DEFAULT_BATCH) -> None:
+def run(*, batch: str = DEFAULT_BATCH, response_ids: list[int] | None = None) -> None:
     conn = connect(autocommit=True)
     last_id, done = 0, 0
     while True:
@@ -39,9 +39,10 @@ def run(*, batch: str = DEFAULT_BATCH) -> None:
             join responses r on r.id = c.response_id
             join queries q on q.id = r.query_id
             where p.id > %s and p.text is not null and c.query_overlap is null and r.batch = %s
+              and (%s::bigint[] is null or r.id = any(%s))
             group by p.id order by p.id limit %s
             """,
-            (last_id, batch, CHUNK),
+            (last_id, batch, response_ids, response_ids, CHUNK),
         ).fetchall()
         if not rows:
             break

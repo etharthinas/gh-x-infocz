@@ -2,6 +2,7 @@ psycopg[binary]
 python-dotenv
 playwright
 anthropic
+typesafe-sdk
 httpx
 trafilatura
 lxml

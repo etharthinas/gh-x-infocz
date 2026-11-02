@@ -78,7 +78,9 @@ def extract_features(html: str, url: str) -> dict:
     for name in _MODIFIED_META:
         modified = modified or _dt(next(iter(doc.xpath(f'//meta[@property="{name}"]/@content')), None))
 
-    imgs = doc.xpath("//img")
+    # 본문 영역의 이미지만 센다. 로고·아이콘·배너는 trafilatura가 본문에서 걸러낸다. 본문을 못 찾으면 페이지 전체를 센다.
+    body = trafilatura.extract(html, url=url, include_images=True, output_format="xml", favor_recall=True)
+    imgs = etree.fromstring(body.encode()).xpath("//graphic") if body else doc.xpath("//img")
     alt_ratio = sum(1 for i in imgs if (i.get("alt") or "").strip()) / len(imgs) if imgs else None
     page_domain = url_domain(url)
     outlinks = {url_domain(h) for h in doc.xpath("//a/@href") if h.startswith("http")} - {"", page_domain}
@@ -170,7 +172,8 @@ def link_citations(conn) -> int:
 
 
 def run(*, batch: str = DEFAULT_BATCH, limit: int | None = None, concurrency: int = 20,
-        retry_failed: bool = False, random: bool = False) -> None:
+        retry_failed: bool = False, random: bool = False, response_ids: list[int] | None = None) -> None:
+    """response_ids를 주면 그 응답의 인용 URL만, 이미 수집한 것도 다시 수집한다 (표본 실행용)."""
     conn = connect(autocommit=True)
     failed = "or p.http_status is null or p.http_status >= 500" if retry_failed else ""
     order = "random()" if random else "count(*) desc"  # 기본은 많이 인용된 URL부터
@@ -179,10 +182,10 @@ def run(*, batch: str = DEFAULT_BATCH, limit: int | None = None, concurrency: in
         select c.url from citations c
         join responses r on r.id = c.response_id
         left join pages p on p.url = c.url
-        where r.batch = %s and (p.id is null {failed})
+        where r.batch = %s and (%s::bigint[] is null and (p.id is null {failed}) or r.id = any(%s))
         group by c.url order by {order} limit %s
         """,
-        (batch, limit),
+        (batch, response_ids, response_ids, limit),
     ).fetchall()]
     print(f"fetch: {len(urls)} URLs")
     for i in range(0, len(urls), CHUNK):

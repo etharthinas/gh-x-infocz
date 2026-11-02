@@ -125,7 +125,8 @@ def label_queries(*, limit: int | None = None, use_batch_api: bool = False) -> N
             max_tokens=500, use_batch_api=use_batch_api)
 
 
-def label_pages(*, limit: int | None = None, version: str = PAGE_VERSION, use_batch_api: bool = False) -> None:
+def label_pages(*, limit: int | None = None, version: str = PAGE_VERSION, use_batch_api: bool = False,
+                response_ids: list[int] | None = None) -> None:
     conn = connect(autocommit=True)
     live = {r[0] for r in conn.execute("select unnest(enum_range(null::industry))::text").fetchall()}
     assert live == set(INDUSTRIES), f"industry enum이 DB와 다릅니다: {sorted(live)}"
@@ -136,8 +137,10 @@ def label_pages(*, limit: int | None = None, version: str = PAGE_VERSION, use_ba
         join (select page_id, count(*) as n from citations group by page_id) c on c.page_id = p.id
         where p.http_status = 200 and length(p.text) > 50
           and not exists (select 1 from page_labels l where l.page_id = p.id and l.label_version = %s)
+          and (%s::bigint[] is null
+               or exists (select 1 from citations x where x.page_id = p.id and x.response_id = any(%s)))
         order by c.n desc limit %s
-        """, (PAGE_CHARS, version, limit)).fetchall()  # 많이 인용된 페이지부터 처리한다
+        """, (PAGE_CHARS, version, response_ids, response_ids, limit)).fetchall()  # 많이 인용된 페이지부터 처리한다
     items = {str(i): f"URL: {url}\n제목: {title}\n본문(앞부분):\n{text}" for i, url, title, text in rows}
 
     def save(results: dict[str, dict]) -> None:
@@ -156,17 +159,58 @@ def label_pages(*, limit: int | None = None, version: str = PAGE_VERSION, use_ba
     llm.run(items, system=PAGE_SYSTEM, schema=PAGE_SCHEMA, save=save, max_tokens=1000, use_batch_api=use_batch_api)
 
 
+# ---------- 페이지 Topic Keywords (analysis.page_label) ----------
+# 자유 텍스트라 Jev로 만들 수 없어 Haiku로 채운다. Jev가 Topic을 매긴 행에만 덧쓴다.
+KEYWORDS_SYSTEM = """AI 검색 엔진이 인용한 웹 페이지의 핵심 키워드를 뽑는다. 제목, 본문 앞부분, 이미 판정된 주제(topic)가 주어진다.
+keywords: 페이지의 주된 주제를 나타내는 한글 키워드 3~5개. 제목 → 첫 문단 → 반복되는 용어 순으로 본다.
+영문 페이지도 한글로 쓰되, 회사·제품·기술의 고유명사는 원래 표기를 그대로 쓴다 (예: Palantir, GraphRAG, AXIOM).
+일반적인 단어(기술, 솔루션, 기업 등)만으로 된 키워드는 쓰지 않는다."""
+KEYWORDS_SCHEMA = _obj({"keywords": _arr(_STR)})
+
+
+def label_topic_keywords(*, limit: int | None = None, use_batch_api: bool = False,
+                         response_ids: list[int] | None = None) -> None:
+    from .jev import fix_infoseeds
+
+    conn = connect(autocommit=True)
+    rows = conn.execute(
+        """
+        select p.id, p.url, p.title, left(p.text, %s), l.topic
+        from analysis.page_label l join pages p on p.id = l.page_id
+        where l.topic is not null and l.topic_keywords = '{}' and l.labeled_by <> 'manual'
+          and (%s::bigint[] is null
+               or exists (select 1 from citations x where x.page_id = p.id and x.response_id = any(%s)))
+        order by p.id limit %s
+        """, (PAGE_CHARS, response_ids, response_ids, limit)).fetchall()
+    items = {}
+    for pid, url, title, text, topic in rows:
+        title, text = fix_infoseeds(title, text)
+        items[str(pid)] = f"URL: {url}\n제목: {title}\n주제(topic): {topic}\n본문(앞부분):\n{text}"
+
+    def save(results: dict[str, dict]) -> None:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "update analysis.page_label set topic_keywords = %s where page_id = %s and topic_keywords = '{}'",
+                [([k.strip() for k in r["keywords"] if k.strip()][:5], int(pid)) for pid, r in results.items()])
+
+    print(f"label-topic-keywords: {len(rows)} pages")
+    llm.run(items, system=KEYWORDS_SYSTEM, schema=KEYWORDS_SCHEMA, save=save, max_tokens=300,
+            use_batch_api=use_batch_api)
+
+
 def label_responses(*, batch: str = DEFAULT_BATCH, engine: str | None = None, limit: int | None = None,
-                    version: str = RESPONSE_VERSION, use_batch_api: bool = False) -> None:
+                    version: str = RESPONSE_VERSION, use_batch_api: bool = False,
+                    response_ids: list[int] | None = None) -> None:
     conn = connect(autocommit=True)
     rows = conn.execute(
         """
         select r.id, q.query_text, r.response_text, coalesce(r.infocz_mentioned, false)
         from responses r join queries q on q.id = r.query_id
         where r.batch = %s and r.response_text is not null and (%s::text is null or r.engine = %s)
+          and (%s::bigint[] is null or r.id = any(%s))
           and not exists (select 1 from response_labels l where l.response_id = r.id and l.label_version = %s)
         order by r.id limit %s
-        """, (batch, engine, engine, version, limit)).fetchall()
+        """, (batch, engine, engine, response_ids, response_ids, version, limit)).fetchall()
     ids = [r[0] for r in rows]
     mentions: dict[int, dict[int, str]] = {i: {} for i in ids}
     for rid, eid, name, role in conn.execute(

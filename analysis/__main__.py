@@ -7,6 +7,10 @@
   python -m analysis label-pages --limit 100         # 직접 호출로 파일럿
   python -m analysis label-pages --api-batch         # 전체는 Batches API로
   python -m analysis label-responses --engine claude --limit 100
+  python -m analysis label-axes --limit 100          # analysis 스키마의 페이지·도메인·인용 축 (Jev)
+  python -m analysis label-keywords                  # analysis.page_label.topic_keywords (Haiku, label-axes 다음에)
+  python -m analysis rules                         # analysis 스키마의 규칙·자동 축 (label-responses 다음에)
+  python -m analysis sample                          # 고정 시드 표본으로 위 단계를 모두 실행하고 요약 출력
   python -m analysis report                          # data/analysis/*.csv
 """
 
@@ -41,6 +45,12 @@ def main() -> None:
     p = add("label-responses", api_batch=True, help="답변 라벨링 (감정·키워드·서술 정확도)")
     p.add_argument("--engine")
     p.add_argument("--version", default=None)
+    add("label-axes", help="analysis 스키마 분류 축 라벨링 (Jev: Format·Topic·Authority·Passage Type 등)")
+    add("label-keywords", batch=False, api_batch=True, help="analysis 스키마 페이지 Topic Keywords (Haiku)")
+    add("rules", limit=False, help="규칙·자동 축 계산 (Self Authored·Language·Visual·Answer Dominance 등)")
+    p = add("sample", limit=False, help="고정 시드 표본(엔진별 인포시즈 인용/비인용 답변)으로 전체 파이프라인 실행 + 요약")
+    p.add_argument("--seed", default=None, help="표본 시드 (기본 analysis.sample.SEED)")
+    p.add_argument("--per-group", type=int, default=5, help="엔진 × 인용 여부 그룹당 답변 수")
     add("report", limit=False, help="집계 CSV 내보내기")
 
     a = parser.parse_args()
@@ -61,6 +71,18 @@ def main() -> None:
         from . import label
         label.label_responses(batch=a.batch, engine=a.engine, limit=a.limit, version=a.version or label.RESPONSE_VERSION,
                               use_batch_api=a.api_batch)
+    elif a.cmd == "label-axes":
+        from . import jev
+        jev.run(batch=a.batch, limit=a.limit)
+    elif a.cmd == "label-keywords":
+        from . import label
+        label.label_topic_keywords(limit=a.limit, use_batch_api=a.api_batch)
+    elif a.cmd == "rules":
+        from . import rules
+        rules.run(batch=a.batch)
+    elif a.cmd == "sample":
+        from . import sample
+        sample.run(batch=a.batch, seed=a.seed or sample.SEED, per_group=a.per_group)
     elif a.cmd == "report":
         from . import report
         report.run(batch=a.batch)
