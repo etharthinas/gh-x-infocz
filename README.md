@@ -182,7 +182,7 @@ group by 1,2,3,4,5;
 
 - 임베딩은 로컬에서 만든다: `.venv/bin/pip install -r requirements-embed.txt` (torch + 모델 약 2.2GB, 서버에는 설치하지 않는다). 없으면 라벨링은 그대로 되고 사전 등록만 건너뛴다.
 - `label-responses` · `label-keywords`가 저장할 때마다 새 키워드를 사전에 넣는다. 기존 라벨은 `normalize-keywords`로 채운다.
-- 사람이 정한 대응은 `insert into analysis.keyword_alias (alias_key, surface, keyword_id, method) values (analysis.keyword_key('표기'), '표기', <id>, 'manual')`. `--rebuild`에도 남는다.
+- 판정은 Haiku(effort medium)라 오병합이 몇 개 남는다(전체 재구축 기준 116개 중 4개). `v_keyword_groups`를 훑어보고 `python -m analysis keyword-alias "표기"`로 떼어 내거나 `--to "대표 표기"`로 옮긴다. 이렇게 정한 대응(`method = 'manual'`)은 `--rebuild`에도 남는다.
 - 뷰: `v_response_keyword` · `v_page_keyword`(행별 원래 표기 → 대표 키워드), `v_keyword_groups`(검토용), `v_keyword_variant_citations`(대표 키워드 안에서 표기별 인용 수와 비중).
 
 ## 분석 예시

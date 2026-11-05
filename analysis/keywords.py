@@ -175,6 +175,37 @@ def _add(conn, new: list[tuple[str, str]], candidate_distance: float) -> dict[st
     return out
 
 
+def set_alias(surface: str, to: str | None = None) -> None:
+    """사람이 정한 대응(method = 'manual', --rebuild에도 남는다). to가 없으면 그 표기를 독립된 대표 키워드로 떼어 낸다."""
+    from . import connect
+
+    conn = connect(autocommit=True)
+    key = conn.execute("select analysis.keyword_key(%s)", (surface,)).fetchone()[0]
+    if to is None:
+        kid = conn.execute(
+            """
+            insert into analysis.keyword (canonical, model, embedding) values (%s, %s, %s::extensions.vector)
+            on conflict (model, canonical) do update set canonical = excluded.canonical returning id
+            """, (surface, MODEL_NAME, _lit(_encode([surface])[0]))).fetchone()[0]
+    else:
+        row = conn.execute("select keyword_id from analysis.keyword_alias where alias_key = analysis.keyword_key(%s)",
+                           (to,)).fetchone()
+        if not row:
+            raise SystemExit(f"'{to}'는 사전에 없다")
+        kid = row[0]
+    conn.execute(
+        """
+        insert into analysis.keyword_alias (alias_key, surface, keyword_id, method) values (%s, %s, %s, 'manual')
+        on conflict (alias_key) do update set keyword_id = excluded.keyword_id, method = 'manual', distance = null
+        """, (key, surface, kid))
+    # 옮기기 전 대표 키워드에 별칭이 하나도 안 남았으면 지운다 (남겨 두면 이후 키워드의 후보로 잡힌다)
+    conn.execute("delete from analysis.keyword k where not exists "
+                 "(select 1 from analysis.keyword_alias a where a.keyword_id = k.id)")
+    canonical = conn.execute("select canonical from analysis.keyword where id = %s", (kid,)).fetchone()[0]
+    print(f"keywords: {surface} → {canonical} (manual)")
+    conn.close()
+
+
 def register_quietly(conn, keywords: Iterable[str]) -> None:
     """라벨링 저장 중에 부른다. 임베딩 패키지가 없으면 한 번 알리고 건너뛴다 (나중에 normalize-keywords로 채움)."""
     global _warned
