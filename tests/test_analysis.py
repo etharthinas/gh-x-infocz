@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from analysis import jev, label, rules  # noqa: E402
+from analysis import jev, keywords, label, rules  # noqa: E402
 from analysis.fetch import extract_features  # noqa: E402
 from analysis.metrics import bigrams, query_overlap  # noqa: E402
 
@@ -134,6 +134,11 @@ def test_dominance():
     same_line = rules.find_mention("인포시즈와 Palantir를 비교하면", ["인포시즈"], None)
     rival = rules.find_mention("인포시즈와 Palantir를 비교하면", ["Palantir"], None)
     assert rules.dominance(same_line, [rival]) == ("neutral", "vs Palantir: order=+0 list_rank=+0 volume=+0 tone=+0")
+
+
+def test_keyword_clean():
+    assert keywords.clean([" 온톨로지 ", "온톨로지", "", "  ", "Neo4j"]) == ["온톨로지", "Neo4j"]
+    assert keywords.clean([]) == []
 
 
 if __name__ == "__main__":

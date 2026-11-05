@@ -167,6 +167,7 @@ group by 1,2,3,4,5;
 .venv/bin/python -m analysis overlap                       # 질문-페이지 정합성 (citations.query_overlap)
 .venv/bin/python -m analysis label-pages --limit 100       # 소량은 직접 호출, 전체는 --api-batch (Batches API, 비용 50%)
 .venv/bin/python -m analysis label-responses --limit 100   # 감정·키워드·서술 정확도(responses.accuracy는 비어 있을 때만 채움)
+.venv/bin/python -m analysis normalize-keywords            # 키워드 사전 백필 (아래 '키워드 정규화')
 .venv/bin/python -m analysis report                        # data/analysis/*.csv
 ```
 
@@ -174,6 +175,15 @@ group by 1,2,3,4,5;
 - 출처 유형(`own_brand` / `competitor_brand` / `true_third_party`)은 열이 아니라 `v_citations`에서 `entities.role`로 계산한다.
 - 수집하지 못한 URL(403, PDF, 연결 실패)은 `pages.http_status`만 남고 라벨이 없다. 집계에서는 "미분류"이며, 비율은 `report`의 `label_coverage.csv`로 확인한다.
 - `pages.text`는 앞 4,000자만 보관한다 (DB 용량).
+
+#### 키워드 정규화
+
+`response_labels.keywords`와 `analysis.page_label.topic_keywords`는 원래 표기 그대로 두고, 같은 뜻의 표기를 사전(`analysis.keyword` 대표 키워드 · `analysis.keyword_alias` 표기)으로 묶는다. 새 키워드는 ① 표면 키(공백·구두점·대소문자 무시)가 같으면 그대로 붙고, ② 아니면 로컬 bge-m3 임베딩으로 가까운 대표 키워드 후보(코사인 거리 ≤ 0.35, 최대 5개)를 찾아 ③ Haiku가 '같은 용어'(번역·표기·줄임말·어순)라고 고른 후보에 붙으며, ④ 없으면 새 대표 키워드가 된다. 임베딩 거리만으로는 정하지 않는다. 기존 키워드로 보정해 보니 더 좁은 용어(팔란티어 온톨로지 → 온톨로지 0.19)나 관련 용어(미탐률 → 오탐률 0.22)가 진짜 변이(팔란티어 ↔ Palantir 0.275)보다 가까웠다.
+
+- 임베딩은 로컬에서 만든다: `.venv/bin/pip install -r requirements-embed.txt` (torch + 모델 약 2.2GB, 서버에는 설치하지 않는다). 없으면 라벨링은 그대로 되고 사전 등록만 건너뛴다.
+- `label-responses` · `label-keywords`가 저장할 때마다 새 키워드를 사전에 넣는다. 기존 라벨은 `normalize-keywords`로 채운다.
+- 사람이 정한 대응은 `insert into analysis.keyword_alias (alias_key, surface, keyword_id, method) values (analysis.keyword_key('표기'), '표기', <id>, 'manual')`. `--rebuild`에도 남는다.
+- 뷰: `v_response_keyword` · `v_page_keyword`(행별 원래 표기 → 대표 키워드), `v_keyword_groups`(검토용), `v_keyword_variant_citations`(대표 키워드 안에서 표기별 인용 수와 비중).
 
 ## 분석 예시
 

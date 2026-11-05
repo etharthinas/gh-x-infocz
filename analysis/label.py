@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from . import DEFAULT_BATCH, ROOT, connect, llm
+from . import DEFAULT_BATCH, ROOT, connect, keywords, llm
 
 PAGE_VERSION = "v1"
 RESPONSE_VERSION = "v2"  # v2: 서술 정확도 판정 기준을 좁히고 accuracy_pred를 저장
@@ -191,7 +191,8 @@ def label_topic_keywords(*, limit: int | None = None, use_batch_api: bool = Fals
         with conn.cursor() as cur:
             cur.executemany(
                 "update analysis.page_label set topic_keywords = %s where page_id = %s and topic_keywords = '{}'",
-                [([k.strip() for k in r["keywords"] if k.strip()][:5], int(pid)) for pid, r in results.items()])
+                [(keywords.clean(r["keywords"])[:5], int(pid)) for pid, r in results.items()])
+        keywords.register_quietly(conn, [k for r in results.values() for k in keywords.clean(r["keywords"])[:5]])
 
     print(f"label-topic-keywords: {len(rows)} pages")
     llm.run(items, system=KEYWORDS_SYSTEM, schema=KEYWORDS_SCHEMA, save=save, max_tokens=300,
@@ -234,7 +235,8 @@ def label_responses(*, batch: str = DEFAULT_BATCH, engine: str | None = None, li
                     insert into response_labels (response_id, label_version, label_model, answer_form, topic, keywords,
                                                  overall_sentiment, accuracy_pred)
                     values (%s, %s, %s, %s, %s, %s, %s, %s) on conflict (response_id, label_version) do nothing
-                    """, (rid, version, llm.MODEL, r["answer_form"], r["topic"], r["keywords"], r["overall_sentiment"],
+                    """, (rid, version, llm.MODEL, r["answer_form"], r["topic"], keywords.clean(r["keywords"]),
+                          r["overall_sentiment"],
                           r["accuracy"] if rid in mentioned_ids and r["accuracy"] != "not_applicable" else None))
                 cur.executemany(
                     "update response_mentions set sentiment = %s, stance = %s where response_id = %s and entity_id = %s",
@@ -242,6 +244,7 @@ def label_responses(*, batch: str = DEFAULT_BATCH, engine: str | None = None, li
                 if rid in mentioned_ids and r["accuracy"] in AUTO_ACCURACY:
                     cur.execute("update responses set accuracy = %s where id = %s and accuracy is null",
                                 (r["accuracy"], rid))
+        keywords.register_quietly(conn, [k for r in results.values() for k in r["keywords"]])
 
     print(f"label-responses: {len(rows)} responses")
     llm.run(items, system=RESPONSE_SYSTEM, schema=RESPONSE_SCHEMA, save=save, max_tokens=3000,

@@ -26,13 +26,13 @@ def _client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=dotenv_values(ROOT / ".env")["ANTHROPIC_API_KEY"], max_retries=5)
 
 
-def _params(system: str, user: str, schema: dict, max_tokens: int) -> dict:
+def _params(system: str, user: str, schema: dict, max_tokens: int, effort: str = "low") -> dict:
     return {
         "model": MODEL,
         "max_tokens": max_tokens,  # Haiku 5.5는 기본으로 사고하며, 사고 토큰도 max_tokens에 포함된다
         "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": user}],
-        "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+        "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": schema}},
     }
 
 
@@ -73,7 +73,7 @@ def _batch(client, items: dict[str, str], params: Callable[[str], dict]) -> dict
 
 
 def run(items: dict[str, str], *, system: str, schema: dict, save: Callable[[dict[str, dict]], None],
-        max_tokens: int = 2000, use_batch_api: bool = False) -> tuple[int, int]:
+        max_tokens: int = 2000, use_batch_api: bool = False, effort: str = "low") -> tuple[int, int]:
     """items: {키: 사용자 메시지}. 단위(chunk)마다 성공한 결과만 save()에 넘기고 (성공 수, 실패 수)를 반환한다."""
     client = _client()
     size = BATCH_CHUNK if use_batch_api else DIRECT_CHUNK
@@ -81,7 +81,7 @@ def run(items: dict[str, str], *, system: str, schema: dict, save: Callable[[dic
     for i in range(0, len(keys), size):
         chunk = {k: items[k] for k in keys[i : i + size]}
         results = (_batch if use_batch_api else _direct)(
-            client, chunk, lambda user: _params(system, user, schema, max_tokens)
+            client, chunk, lambda user: _params(system, user, schema, max_tokens, effort)
         )
         good = {k: v for k, v in results.items() if v is not None}
         save(good)

@@ -284,3 +284,88 @@ with pg as (
 )
 select unit, axis, total, labeled, round(labeled * 1.0 / nullif(total, 0), 4) as coverage
 from cov;
+
+-- ---------- 키워드 사전 (정규화) ----------
+-- response_labels.keywords · page_label.topic_keywords 는 LLM이 뽑은 원래 표기 그대로 둔다 (어느 표기가 더 인용되는지 보기 위해).
+-- 사전은 표기 → 대표 키워드 대응만 기록한다. 새 키워드가 들어오면 (analysis/keywords.py)
+--   1. 표면 키(keyword_key: NFC · 소문자 · 공백/구두점 제거)가 이미 별칭에 있으면 그 대표 키워드
+--   2. 없으면 임베딩으로 가까운 대표 키워드 후보를 찾고(코사인 거리 ≤ 0.35, 최대 5개)
+--   3. Haiku가 후보 중 '같은 용어'(번역 · 표기 · 줄임말 · 어순 차이)를 고르면 그 별칭으로 붙이고
+--   4. 아니면 새 대표 키워드가 된다.
+-- 대표 키워드끼리만 비교하므로(별칭과는 비교하지 않음) 연쇄적으로 뜻이 번지지 않는다.
+-- method = 'manual' 별칭은 사람이 정한 것이라 재구축(--rebuild) 때도 지우지 않는다.
+create extension if not exists vector with schema extensions;
+
+create or replace function analysis.keyword_key(k text) returns text
+language sql immutable strict parallel safe as $$
+    select nullif(lower(regexp_replace(normalize(btrim(k), NFC), '[[:space:]\-_·・.,/]+', '', 'g')), '')
+$$;
+
+create table if not exists analysis.keyword (
+    id         bigserial primary key,
+    canonical  text not null,                      -- 처음 들어온(백필 때는 가장 자주 쓰인) 표기
+    model      text not null,                      -- 임베딩 모델. 모델이 바뀌면 사전을 다시 만든다
+    embedding  extensions.vector not null,         -- 정규화된 벡터 (코사인 거리 <=>)
+    created_at timestamptz not null default now(),
+    unique (model, canonical)
+);
+
+create table if not exists analysis.keyword_alias (
+    alias_key  text primary key,                   -- analysis.keyword_key(표기)
+    surface    text not null,                      -- 처음 본 표기 그대로
+    keyword_id bigint not null references analysis.keyword (id) on delete cascade,
+    method     text not null,                      -- new 새 대표 · llm 후보 중 Haiku가 같은 용어로 판정 · manual 사람이 지정
+    distance   real,                               -- llm 으로 붙을 때 대표 키워드와의 코사인 거리
+    created_at timestamptz not null default now()
+);
+alter table analysis.keyword_alias drop constraint if exists keyword_alias_method_check;
+alter table analysis.keyword_alias add constraint keyword_alias_method_check check (method in ('new', 'llm', 'manual'));
+create index if not exists keyword_alias_keyword_id on analysis.keyword_alias (keyword_id);
+
+alter table analysis.keyword       enable row level security;
+alter table analysis.keyword_alias enable row level security;
+
+-- 행 단위 키워드 → 대표 키워드. 사전에 아직 없는 키워드는 keyword_id 가 null.
+create or replace view analysis.v_response_keyword as
+select l.response_id, l.label_version, k.ord, k.raw as keyword, a.keyword_id, kw.canonical
+from public.response_labels l
+cross join lateral unnest(l.keywords) with ordinality k(raw, ord)
+left join analysis.keyword_alias a on a.alias_key = analysis.keyword_key(k.raw)
+left join analysis.keyword kw on kw.id = a.keyword_id;
+
+create or replace view analysis.v_page_keyword as
+select l.page_id, k.ord, k.raw as keyword, a.keyword_id, kw.canonical
+from analysis.page_label l
+cross join lateral unnest(l.topic_keywords) with ordinality k(raw, ord)
+left join analysis.keyword_alias a on a.alias_key = analysis.keyword_key(k.raw)
+left join analysis.keyword kw on kw.id = a.keyword_id;
+
+-- 대표 키워드별 별칭과 사용 횟수 (검토용)
+create or replace view analysis.v_keyword_groups as
+with uses as (
+    select keyword_id, count(*) as n from analysis.v_response_keyword group by 1
+    union all
+    select keyword_id, count(*) from analysis.v_page_keyword group by 1
+)
+select kw.id, kw.canonical,
+       (select coalesce(sum(n), 0) from uses u where u.keyword_id = kw.id) as uses,
+       array_agg(a.surface order by a.method = 'new' desc, a.distance nulls first) as aliases,
+       max(a.distance) as max_distance
+from analysis.keyword kw join analysis.keyword_alias a on a.keyword_id = kw.id
+group by kw.id, kw.canonical;
+
+-- 같은 뜻(대표 키워드) 안에서 표기별 인용. 페이지 키워드의 원래 표기마다 그 페이지들이 받은 인용을 센다.
+-- 측정 회차(batch)별로 나뉘므로 보통 where batch = 'baseline-2026-10' 으로 거른다. share = 대표 키워드 안에서 표기의 인용 비중.
+create or replace view analysis.v_keyword_variant_citations as
+with v as (
+    select pk.keyword_id, pk.canonical, pk.keyword as variant, r.batch,
+           count(distinct pk.page_id) as pages, count(c.id) as citations,
+           count(distinct c.response_id) as citing_responses
+    from analysis.v_page_keyword pk
+    join public.citations c on c.page_id = pk.page_id
+    join public.responses r on r.id = c.response_id
+    group by 1, 2, 3, 4
+)
+select v.*, (select count(distinct a.surface) from analysis.keyword_alias a where a.keyword_id = v.keyword_id) as n_aliases,
+       round(citations * 1.0 / nullif(sum(citations) over (partition by keyword_id, batch), 0), 4) as share
+from v;

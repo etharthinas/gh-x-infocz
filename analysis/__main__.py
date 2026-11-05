@@ -9,6 +9,7 @@
   python -m analysis label-responses --engine claude --limit 100
   python -m analysis label-axes --limit 100          # analysis 스키마의 페이지·도메인·인용 축 (Jev)
   python -m analysis label-keywords                  # analysis.page_label.topic_keywords (Haiku, label-axes 다음에)
+  python -m analysis normalize-keywords              # 키워드 사전 백필 (임베딩 후보 + Haiku 판정) · --rebuild
   python -m analysis rules                         # analysis 스키마의 규칙·자동 축 (label-responses 다음에)
   python -m analysis sample                          # 고정 시드 표본으로 위 단계를 모두 실행하고 요약 출력
   python -m analysis report                          # data/analysis/*.csv
@@ -47,6 +48,10 @@ def main() -> None:
     p.add_argument("--version", default=None)
     add("label-axes", help="analysis 스키마 분류 축 라벨링 (Jev: Format·Topic·Authority·Passage Type 등)")
     add("label-keywords", batch=False, api_batch=True, help="analysis 스키마 페이지 Topic Keywords (Haiku)")
+    p = add("normalize-keywords", batch=False, limit=False, help="키워드를 대표 키워드로 묶는 사전 채우기 (임베딩)")
+    p.add_argument("--rebuild", action="store_true", help="manual 별칭만 남기고 사전을 다시 만든다")
+    p.add_argument("--candidate-distance", type=float, default=None,
+                   help="LLM에 후보로 보여줄 최대 코사인 거리 (기본 keywords.CANDIDATE_DISTANCE)")
     add("rules", limit=False, help="규칙·자동 축 계산 (Self Authored·Language·Visual·Answer Dominance 등)")
     p = add("sample", limit=False, help="고정 시드 표본(엔진별 인포시즈 인용/비인용 답변)으로 전체 파이프라인 실행 + 요약")
     p.add_argument("--seed", default=None, help="표본 시드 (기본 analysis.sample.SEED)")
@@ -77,6 +82,10 @@ def main() -> None:
     elif a.cmd == "label-keywords":
         from . import label
         label.label_topic_keywords(limit=a.limit, use_batch_api=a.api_batch)
+    elif a.cmd == "normalize-keywords":
+        from . import keywords
+        keywords.run(rebuild=a.rebuild, candidate_distance=a.candidate_distance if a.candidate_distance is not None
+                     else keywords.CANDIDATE_DISTANCE)
     elif a.cmd == "rules":
         from . import rules
         rules.run(batch=a.batch)
