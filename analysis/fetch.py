@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -127,6 +128,16 @@ def _rewrite(url: str) -> str:
     return f"https://m.blog.naver.com/{m[1]}/{m[2]}" if m else url
 
 
+_PARSE_LOCK = threading.Lock()
+
+
+def _extract_serial(html: str, url: str) -> dict:
+    # lxml(trafilatura 포함)을 여러 스레드에서 동시에 쓰면 etree 안에서 segfault가 났다 (2026-11-09, 약 1,000건째).
+    # 파싱은 짧고 어차피 GIL을 잡으므로 한 번에 하나씩 해도 수집 속도는 거의 그대로다.
+    with _PARSE_LOCK:
+        return extract_features(html, url)
+
+
 async def _fetch_one(client: httpx.AsyncClient, sem: asyncio.Semaphore, host_sems, url: str) -> dict:
     row: dict = {"url": url}
     target = _rewrite(url)
@@ -146,7 +157,7 @@ async def _fetch_one(client: httpx.AsyncClient, sem: asyncio.Semaphore, host_sem
     if resp.status_code == 200 and "html" in ctype:  # PDF 등은 본문 추출을 생략한다
         html = decode_file(resp.content[:MAX_BYTES])
         try:
-            row.update(await asyncio.to_thread(extract_features, html, url))
+            row.update(await asyncio.to_thread(_extract_serial, html, url))
         except Exception as e:  # 페이지 하나의 파싱 오류로 전체 수집이 멈추지 않게 한다
             row["fetch_error"] = f"extract: {type(e).__name__}"
     return row
