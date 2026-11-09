@@ -191,8 +191,11 @@ def link_citations(conn) -> int:
 
 
 def run(*, batch: str = DEFAULT_BATCH, limit: int | None = None, concurrency: int = 20,
-        retry_failed: bool = False, random: bool = False, response_ids: list[int] | None = None) -> None:
-    """response_ids를 주면 그 응답의 인용 URL만, 이미 수집한 것도 다시 수집한다 (표본 실행용)."""
+        retry_failed: bool = False, random: bool = False, response_ids: list[int] | None = None,
+        shard: str | None = None) -> None:
+    """response_ids를 주면 그 응답의 인용 URL만, 이미 수집한 것도 다시 수집한다 (표본 실행용).
+    shard="i/n"이면 URL 해시로 n등분한 i번째 몫만 수집한다 (여러 기기에서 나눠 돌릴 때)."""
+    part, parts = map(int, shard.split("/")) if shard else (None, None)
     conn = connect(autocommit=True)
     failed = "or p.http_status is null or p.http_status >= 500" if retry_failed else ""
     order = "random()" if random else "count(*) desc"  # 기본은 많이 인용된 URL부터
@@ -202,9 +205,10 @@ def run(*, batch: str = DEFAULT_BATCH, limit: int | None = None, concurrency: in
         join responses r on r.id = c.response_id
         left join pages p on p.url = c.url
         where r.batch = %s and (%s::bigint[] is null and (p.id is null {failed}) or r.id = any(%s))
+          and (%s::int is null or mod(abs(hashtext(c.url)), %s) = %s)
         group by c.url order by {order} limit %s
         """,
-        (batch, response_ids, response_ids, limit),
+        (batch, response_ids, response_ids, parts, parts, part, limit),
     ).fetchall()]
     print(f"fetch: {len(urls)} URLs")
     for i in range(0, len(urls), CHUNK):

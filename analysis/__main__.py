@@ -40,6 +40,7 @@ def main() -> None:
     p.add_argument("--concurrency", type=int, default=20)
     p.add_argument("--random", action="store_true", help="많이 인용된 순서 대신 무작위 (파일럿용)")
     p.add_argument("--retry-failed", action="store_true", help="연결 실패·5xx였던 URL을 다시 시도")
+    p.add_argument("--shard", help="i/n: URL을 n등분한 i번째 몫만 (예: 서버 0/2, 노트북 1/2)")
     add("overlap", limit=False, help="질문-페이지 정합성(query_overlap) 계산")
     add("label-queries", batch=False, api_batch=True, help="queries.persona 라벨링")
     p = add("label-pages", batch=False, api_batch=True, help="인용 페이지 라벨링")
@@ -68,7 +69,7 @@ def main() -> None:
     if a.cmd == "fetch":
         from . import fetch
         fetch.run(batch=a.batch, limit=a.limit, concurrency=a.concurrency, retry_failed=a.retry_failed,
-                  random=a.random)
+                  random=a.random, shard=a.shard)
     elif a.cmd == "overlap":
         from . import metrics
         metrics.run(batch=a.batch)
