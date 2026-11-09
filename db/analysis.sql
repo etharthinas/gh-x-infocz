@@ -47,7 +47,7 @@ create table if not exists analysis.page_label (
     industry       text check (industry in ('general', 'manufacturing', 'defense', 'finance', 'energy_plant',
                        'semiconductor', 'public_sector', 'healthcare', 'telecom', 'automotive', 'retail_logistics',
                        'construction_shipbuilding')),
-    persona        text check (persona in ('executive', 'practitioner', 'business')),
+    persona        text check (persona in ('executive', 'practitioner', 'public')),
     tone           text check (tone in ('neutral_info', 'expert_analysis', 'promotional', 'opinion')),
     evidence       text check (evidence in ('stats', 'case', 'quote', 'source', 'authority', 'none')),
     visual         text check (visual in ('text_only', 'image', 'table', 'diagram', 'infographic', 'video', 'screenshot')),
@@ -426,3 +426,19 @@ select key, mode() within group (order by name) as name,
        (array_agg(batch order by executed_at))[1] as first_batch, min(executed_at) as first_seen
 from v where key is not null
 group by key;
+
+-- ---------- 마이그레이션: persona business → public (2026-11-09) ----------
+-- create table if not exists는 기존 제약을 바꾸지 않으므로 직접 바꾼다. 멱등: 매번 다시 만들어도 같다.
+-- 옛 business(현업·구매 담당)와 public(일반 대중)은 뜻이 달라 값을 옮기지 않고 비운다 → 다시 라벨링된다.
+alter table public.queries drop constraint if exists queries_persona_check;
+alter table public.page_labels drop constraint if exists page_labels_persona_check;
+alter table analysis.page_label drop constraint if exists page_label_persona_check;
+update public.queries set persona = null where persona = 'business';
+update public.page_labels set persona = null where persona = 'business';
+update analysis.page_label set persona = null where persona = 'business';
+alter table public.queries add constraint queries_persona_check
+    check (persona in ('executive', 'practitioner', 'public'));
+alter table public.page_labels add constraint page_labels_persona_check
+    check (persona in ('executive', 'practitioner', 'public'));
+alter table analysis.page_label add constraint page_label_persona_check
+    check (persona in ('executive', 'practitioner', 'public'));

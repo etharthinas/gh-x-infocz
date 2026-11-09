@@ -14,27 +14,14 @@ import unicodedata
 from crawler.entities import Entity, EntityMatcher
 
 from . import DEFAULT_BATCH, connect, llm
-from .label import ANSWER_CHARS, _arr, _enum, _obj
+from .label import ANSWER_CHARS, VENDOR_KINDS as KINDS, VENDOR_RULES, VENDORS_FIELD, _arr, _enum, _obj
 
 # v2: 회사 단위로 묶고(제품은 회사 아래로) 답변 속 표기를 모두 받아 엔티티 매칭에 쓴다
 # v3: 질문에 나온 회사는 제외 (답변이 새로 꺼낸 업체만), 본문 대조(verify)로 지어낸 이름 제거
-VERSION = "v3"
-KINDS = ["vendor", "customer", "other"]
+VERSION = "v3"  # 전체 실행은 label.label_responses가 답변 라벨과 한 호출로 뽑는다 (규칙 문구는 같아 버전 유지)
 
-SYSTEM = """AI 검색 엔진의 답변에서 회사 이름을 뽑는다. 질문과 답변이 주어진다.
-
-vendors: 답변에 나온 회사를 처음 나온 순서대로 모두. 같은 회사는 한 번만 쓰고, 그 회사의 제품·서비스도 같은 항목에 묶는다
-         (예: GuardDuty, Macie → Amazon Web Services 한 항목).
-  name: 회사 이름. 답변이 제품명만 쓰고 회사가 분명하면 회사 이름, 모르면 제품명.
-  spellings: 답변에 실제로 쓰인 그 회사·제품의 표기 전부, 글자 그대로 (예: ['이글루', '이글루코퍼레이션', 'SPiDER TM']).
-  kind:
-    vendor   질문이 찾는 솔루션·서비스를 제공하는 업체로 제시됨 (추천, 후보 목록, 비교 대상, 대안).
-    customer 도입 사례·고객사·사용 기관으로만 나옴.
-    other    그 밖의 회사: 연구기관·정부·언론, 기반 기술로만 언급된 회사(예: 'AWS 위에서 동작'), 출처 사이트.
-질문에 이미 나온 회사는 넣지 않는다. 답변이 새로 꺼낸 회사만 뽑는다.
-회사가 아닌 것은 넣지 않는다:소제목('주요 특징', '업체 선정 시 확인할 점'), 기능·기술 용어, 제품 범주('UEBA 솔루션', '국내 업체')."""
-SCHEMA = _obj({"vendors": _arr(_obj({"name": {"type": "string"}, "spellings": _arr({"type": "string"}),
-                                     "kind": _enum(KINDS)}))})
+SYSTEM = "AI 검색 엔진의 답변에서 회사 이름을 뽑는다. 질문과 답변이 주어진다.\n\n" + VENDOR_RULES
+SCHEMA = _obj({"vendors": VENDORS_FIELD})
 
 
 def matcher(conn) -> EntityMatcher:

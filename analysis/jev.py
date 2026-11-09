@@ -20,7 +20,7 @@ from . import DEFAULT_BATCH, ROOT, connect
 from .label import PAGE_CHARS
 
 MODEL = "jev-1.13.0"  # 버전 고정: jev-latest는 릴리스마다 답이 달라져 label_version과 맞지 않는다
-LABEL_VERSION = "v3"  # v2: 선택지 이름 self → infocz, Format 차선 판정 추가 / v3: Infoseeds 오역 교정
+LABEL_VERSION = "v4"  # v2: 선택지 이름 self → infocz, Format 차선 판정 추가 / v3: Infoseeds 오역 교정 / v4: persona business → public
 TAG = f"{MODEL}@{LABEL_VERSION}"  # label_version 열이 없는 domain_label · citation_label의 label_model 값
 YES = 0.7             # Noul 판정 기준 (TypeSafe 권장 출발점)
 MAYBE = 0.3           # Format에서 YES인 값이 없을 때 차선으로 받아들이는 하한
@@ -86,7 +86,7 @@ INDUSTRIES = {
 PERSONAS = {
     "executive": "executives and decision makers: strategy, cost, and risk, written as a summary",
     "practitioner": "practitioners and engineers: implementation, configuration, code, many technical terms",
-    "business": "business, planning, or purchasing staff: features, benefits, adoption review, shallow technical depth",
+    "public": "the general public and non-specialists: plain-language explanation of what something is and why it matters, little jargon",
 }
 TONES = {
     "neutral_info": "neutral information: objective, almost no promotion or subjective wording",

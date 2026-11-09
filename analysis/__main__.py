@@ -4,14 +4,13 @@
   python -m analysis fetch                           # 전체 (많이 인용된 URL부터)
   python -m analysis overlap                         # 질문-페이지 정합성
   python -m analysis label-queries                   # queries.persona 채우기
-  python -m analysis label-pages --limit 100         # 직접 호출로 파일럿
-  python -m analysis label-pages --api-batch         # 전체는 Batches API로
-  python -m analysis label-responses --engine claude --limit 100
+  python -m analysis label-pages --limit 100         # (전체 실행에서 뺌: 페이지 축은 label-axes(Jev)가 채운다)
+  python -m analysis label-responses --engine claude --limit 100   # 답변 라벨 + 업체 추출을 한 호출로
   python -m analysis label-axes --limit 100          # analysis 스키마의 페이지·도메인·인용 축 (Jev)
   python -m analysis label-keywords                  # analysis.page_label.topic_keywords (Haiku, label-axes 다음에)
   python -m analysis normalize-keywords              # 키워드 사전 백필 (임베딩 후보 + Haiku 판정) · --rebuild
   python -m analysis keyword-alias "LLM analysis"    # 잘못 묶인 표기 떼어 내기 (--to "대표"로 다른 대표에 붙이기)
-  python -m analysis discover-vendors --sample       # 답변 속 업체 추출 (미등록 경쟁사 후보, Haiku)
+  python -m analysis discover-vendors --sample       # 업체 추출만 따로 (전체 실행은 label-responses가 함께 한다)
   python -m analysis rules                     # analysis 스키마의 규칙·자동 축 (label-responses 다음에)
   python -m analysis sample                          # 고정 시드 표본으로 위 단계를 모두 실행하고 요약 출력
   python -m analysis report                          # data/analysis/*.csv

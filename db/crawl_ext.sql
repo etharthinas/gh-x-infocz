@@ -49,7 +49,7 @@ create table if not exists page_labels (
                        'forum_qa', 'press_release', 'academic', 'company_intro', 'other')),
     topic          text[] not null default '{}',
     industry       industry,            -- queries.industry와 같은 enum: 질문과 페이지의 산업 일치 여부를 조인으로 본다
-    persona        text check (persona in ('executive', 'practitioner', 'business')),
+    persona        text check (persona in ('executive', 'practitioner', 'public')),
     tone           text check (tone in ('neutral_info', 'promotional', 'expert_analysis', 'opinion')),
     evidence       text[] not null default '{}' check (evidence <@ array['stats', 'case', 'source']::text[]),
     publisher_kind text check (publisher_kind in ('brand', 'media', 'government', 'academic', 'community', 'other')),

@@ -47,7 +47,7 @@ create table queries (
     constraint_tags  constraint_type[] not null default '{}',  -- 대표값 외 추가 조건
     use_case         text,                                      -- 시장×산업 하위 유스케이스 (P&ID, IP 유출 등)
     template         text,                                      -- 엔티티 변형 쿼리의 원형 ({c} 자리에 경쟁사). 같은 template = 같은 슬롯
-    persona          text check (persona in ('executive', 'practitioner', 'business')),
+    persona          text check (persona in ('executive', 'practitioner', 'public')),
     parent_query_id  bigint references queries (id) on delete cascade,  -- fanout → 원래 seed 쿼리
     is_active        boolean not null default true,              -- false = 측정에서 제외 (MECE 리뷰로 비활성화한 슬롯 등)
     review_note      text,                                      -- 비활성화·수정 사유

@@ -20,17 +20,18 @@ REPORTS = {
                               as median_age_months
                    from v_citations where batch = %(batch)s and page_age_days >= 0
                    group by engine, source_type order by engine, source_type""",
-    "page_form": """select engine, page_form, count(*) as n,
+    "page_form": """select engine, format as page_form, count(*) as n,
                            round(count(*) * 1.0 / sum(count(*)) over (partition by engine), 4) as share
-                    from v_citations where batch = %(batch)s and page_form is not null
-                    group by engine, page_form order by engine, n desc""",
+                    from analysis.v_citation_analysis where batch = %(batch)s and format is not null
+                    group by engine, format order by engine, n desc""",
     "query_overlap": "select engine, source_type, count(query_overlap) as n, round(avg(query_overlap)::numeric, 3) "
                      "as avg_overlap from v_citations where batch = %(batch)s group by engine, source_type "
                      "order by engine, source_type",
-    "label_coverage": """select engine, count(*) as citations, count(page_id) as with_page,
+    "label_coverage": """select engine, count(*) as citations, count(c.page_id) as with_page,
                                 count(*) filter (where http_status = 200) as fetched_ok,
-                                count(page_form) as labeled
-                         from v_citations where batch = %(batch)s group by engine order by engine""",
+                                count(pl.format) as labeled
+                         from v_citations c left join analysis.page_label pl on pl.page_id = c.page_id
+                         where batch = %(batch)s group by engine order by engine""",
     "mention_rate": """select engine, count(*) as responses, count(response_text) as with_answer,
                               count(*) filter (where infocz_mentioned) as infocz_mentioned,
                               round(avg(infocz_rank)::numeric, 2) as avg_infocz_rank

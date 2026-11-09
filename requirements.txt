@@ -6,3 +6,4 @@ typesafe-sdk
 httpx
 trafilatura
 lxml
+lxml_html_clean  # trafilatura → justext가 쓰는 lxml.html.clean이 lxml에서 분리됨

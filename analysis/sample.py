@@ -12,7 +12,7 @@ import re
 from decimal import Decimal
 from pathlib import Path
 
-from . import DEFAULT_BATCH, ROOT, connect, fetch, jev, label, metrics, rules, vendors
+from . import DEFAULT_BATCH, ROOT, connect, fetch, jev, label, metrics, rules
 
 SEED = "sample-2026-11"
 ENGINES = ["chatgpt", "gemini", "claude", "naver_ai_briefing", "google_aio"]  # analysis.v_citation_analysis와 같은 목록
@@ -174,11 +174,9 @@ def run(*, batch: str = DEFAULT_BATCH, seed: str = SEED, per_group: int = 5) -> 
     print(f"sample: seed={seed}, {len(ids)} responses: {ids}")
     fetch.run(batch=batch, response_ids=ids)
     metrics.run(batch=batch, response_ids=ids)
-    label.label_pages(response_ids=ids)
     label.label_responses(batch=batch, response_ids=ids)
     jev.run(batch=batch, response_ids=ids)
     label.label_topic_keywords(response_ids=ids)
-    vendors.run(batch=batch, response_ids=ids)
     rules.run(batch=batch, response_ids=ids)
     summarize(conn, ids)
     export(conn, ROOT / "data" / "analysis" / "sample")

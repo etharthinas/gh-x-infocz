@@ -6,16 +6,18 @@
 
 from __future__ import annotations
 
+import json
+
 from . import DEFAULT_BATCH, ROOT, connect, keywords, llm
 
 PAGE_VERSION = "v1"
-RESPONSE_VERSION = "v2"  # v2: 서술 정확도 판정 기준을 좁히고 accuracy_pred를 저장
+RESPONSE_VERSION = "v3"  # v2: 서술 정확도 판정 기준을 좁히고 accuracy_pred를 저장 / v3: 업체 추출(vendors)을 같은 호출로
 
 PAGE_FORMS = ["news", "blog_opinion", "reference", "tech_doc", "how_to", "faq", "product_page", "comparison_list",
               "review", "case_study", "interview", "report_whitepaper", "forum_qa", "press_release", "academic",
               "company_intro", "other"]
 INDUSTRIES = ["semiconductor", "energy_plant", "finance", "manufacturing", "defense", "general"]  # 실제 DB enum 기준
-PERSONAS = ["executive", "practitioner", "business"]
+PERSONAS = ["executive", "practitioner", "public"]
 TONES = ["neutral_info", "promotional", "expert_analysis", "opinion"]
 EVIDENCE = ["stats", "case", "source"]
 PUBLISHER_KINDS = ["brand", "media", "government", "academic", "community", "other"]
@@ -42,7 +44,7 @@ _STR = {"type": "string"}
 
 _PERSONA_RUBRIC = """- executive: 경영진·임원. 투자 대비 효과, 전략, 위험, 도입 결정을 묻는다.
 - practitioner: 실무 담당자(엔지니어, DX·보안·데이터 담당자). 구현 방식, 아키텍처, 도구 선택, 기술 세부를 묻는다.
-- business: 현업 부서 사용자(생산, 운영, 재무, 영업 등). 자기 업무의 문제를 어떻게 풀지 묻는다."""
+- public: 일반 대중·비전문가(학생, 언론, 관심 있는 일반인). 개념이 무엇인지, 왜 중요한지, 사회·산업에 어떤 영향이 있는지 쉬운 설명을 묻는다."""
 
 # ---------- 질문 ----------
 QUERY_SYSTEM = f"""검색 질문을 입력한 사람이 어떤 독자인지 분류한다. 다음 중 하나만 고른다.
@@ -75,6 +77,21 @@ PAGE_SCHEMA = _obj({
 })
 
 # ---------- 답변 ----------
+# 업체 추출(analysis.response_vendor)도 같은 (질문, 답변) 입력이라 답변 라벨과 한 호출로 받는다. vendors.py가 저장·검증을 맡는다.
+VENDOR_KINDS = ["vendor", "customer", "other"]
+VENDOR_RULES = """vendors: 답변에 나온 회사를 처음 나온 순서대로 모두. 같은 회사는 한 번만 쓰고, 그 회사의 제품·서비스도 같은 항목에 묶는다
+         (예: GuardDuty, Macie → Amazon Web Services 한 항목).
+  name: 회사 이름. 답변이 제품명만 쓰고 회사가 분명하면 회사 이름, 모르면 제품명.
+  spellings: 답변에 실제로 쓰인 그 회사·제품의 표기 전부, 글자 그대로 (예: ['이글루', '이글루코퍼레이션', 'SPiDER TM']).
+  kind:
+    vendor   질문이 찾는 솔루션·서비스를 제공하는 업체로 제시됨 (추천, 후보 목록, 비교 대상, 대안).
+    customer 도입 사례·고객사·사용 기관으로만 나옴.
+    other    그 밖의 회사: 연구기관·정부·언론, 기반 기술로만 언급된 회사(예: 'AWS 위에서 동작'), 출처 사이트.
+질문에 이미 나온 회사는 넣지 않는다. 답변이 새로 꺼낸 회사만 뽑는다.
+회사가 아닌 것은 넣지 않는다:소제목('주요 특징', '업체 선정 시 확인할 점'), 기능·기술 용어, 제품 범주('UEBA 솔루션', '국내 업체')."""
+VENDORS_FIELD = _arr(_obj({"name": _STR, "spellings": _arr(_STR), "kind": _enum(VENDOR_KINDS)}))
+
+
 def _infocz_facts() -> str:
     text = (ROOT / "CONTEXT.md").read_text(encoding="utf-8")
     return text.split("## 인포시즈", 1)[1].split("## 핵심 진단", 1)[0].strip()
@@ -96,6 +113,7 @@ accuracy: 인포시즈에 대한 서술이 아래 확인된 사실과 맞는지 
   고객 수, 점유율)이 섞임 / wrong 아래 사실과 직접 모순됨(예: 다른 사업 영역, 다른 제품, 틀린 출시 시기) /
   confused_infosys 인도 Infosys와 혼동하거나 같은 회사로 서술.
   아래에 없는 내용은 아무리 단정적으로 쓰였더라도 틀렸다고 판단하지 말고 partial로 판정한다. 확인할 수 없기 때문이다.
+{VENDOR_RULES}
 
 [확인된 인포시즈 사실]
 {_infocz_facts()}"""
@@ -103,7 +121,7 @@ RESPONSE_SCHEMA = _obj({
     "answer_form": _enum(ANSWER_FORMS), "topic": _arr(_STR), "keywords": _arr(_STR),
     "overall_sentiment": _enum(SENTIMENTS),
     "entities": _arr(_obj({"id": {"type": "integer"}, "sentiment": _enum(SENTIMENTS), "stance": _enum(STANCES)})),
-    "accuracy": _enum(ACCURACY),
+    "accuracy": _enum(ACCURACY), "vendors": VENDORS_FIELD,
 })
 ANSWER_CHARS = 9000   # 수집된 답변의 최대 길이(약 7,900자)보다 크므로 잘리지 않는다
 PAGE_CHARS = 1500
@@ -202,6 +220,8 @@ def label_topic_keywords(*, limit: int | None = None, use_batch_api: bool = Fals
 def label_responses(*, batch: str = DEFAULT_BATCH, engine: str | None = None, limit: int | None = None,
                     version: str = RESPONSE_VERSION, use_batch_api: bool = False,
                     response_ids: list[int] | None = None) -> None:
+    from . import vendors  # vendors가 이 모듈을 import하므로 여기서 불러온다
+
     conn = connect(autocommit=True)
     rows = conn.execute(
         """
@@ -209,9 +229,11 @@ def label_responses(*, batch: str = DEFAULT_BATCH, engine: str | None = None, li
         from responses r join queries q on q.id = r.query_id
         where r.batch = %s and r.response_text is not null and (%s::text is null or r.engine = %s)
           and (%s::bigint[] is null or r.id = any(%s))
-          and not exists (select 1 from response_labels l where l.response_id = r.id and l.label_version = %s)
+          and (not exists (select 1 from response_labels l where l.response_id = r.id and l.label_version = %s)
+               or not exists (select 1 from analysis.response_vendor v
+                              where v.response_id = r.id and v.label_version = %s))
         order by r.id limit %s
-        """, (batch, engine, engine, response_ids, response_ids, version, limit)).fetchall()
+        """, (batch, engine, engine, response_ids, response_ids, version, vendors.VERSION, limit)).fetchall()
     ids = [r[0] for r in rows]
     mentions: dict[int, dict[int, str]] = {i: {} for i in ids}
     for rid, eid, name, role in conn.execute(
@@ -225,6 +247,14 @@ def label_responses(*, batch: str = DEFAULT_BATCH, engine: str | None = None, li
         for rid, query, text, mentioned in rows
     }
     mentioned_ids = {rid for rid, _, _, mentioned in rows if mentioned}
+    text = {rid: (query, t) for rid, query, t, _ in rows}
+    asked_entities: dict[int, set[int]] = {i: set() for i in ids}
+    for rid, eid in conn.execute(
+            "select r.id, qe.entity_id from responses r join query_entities qe on qe.query_id = r.query_id "
+            "where r.id = any(%s)", (ids,)).fetchall():
+        asked_entities[rid].add(eid)
+    m = vendors.matcher(conn)
+    dropped = {"made_up": 0, "asked": 0}
 
     def save(results: dict[str, dict]) -> None:
         with conn.cursor() as cur:
@@ -244,8 +274,16 @@ def label_responses(*, batch: str = DEFAULT_BATCH, engine: str | None = None, li
                 if rid in mentioned_ids and r["accuracy"] in AUTO_ACCURACY:
                     cur.execute("update responses set accuracy = %s where id = %s and accuracy is null",
                                 (r["accuracy"], rid))
+                kept, made_up, asked = vendors.verify(r["vendors"], *text[rid], m, asked_entities[rid])
+                dropped["made_up"] += made_up
+                dropped["asked"] += asked
+                cur.execute(
+                    "insert into analysis.response_vendor (response_id, label_version, label_model, vendors) "
+                    "values (%s, %s, %s, %s) on conflict do nothing",
+                    (rid, vendors.VERSION, llm.MODEL, json.dumps(kept, ensure_ascii=False)))
         keywords.register_quietly(conn, [k for r in results.values() for k in r["keywords"]])
 
     print(f"label-responses: {len(rows)} responses")
-    llm.run(items, system=RESPONSE_SYSTEM, schema=RESPONSE_SCHEMA, save=save, max_tokens=3000,
+    llm.run(items, system=RESPONSE_SYSTEM, schema=RESPONSE_SCHEMA, save=save, max_tokens=5000,
             use_batch_api=use_batch_api)
+    print(f"label-responses: vendors 본문에 없어 버림 {dropped['made_up']}, 질문에 나온 회사라 버림 {dropped['asked']}")

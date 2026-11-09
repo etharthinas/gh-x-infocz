@@ -17,7 +17,8 @@ from dotenv import dotenv_values
 from . import ROOT
 
 MODEL = "claude-haiku-5-5"
-DIRECT_CHUNK = 100   # 직접 호출 시 저장 단위
+DIRECT_CHUNK = 500   # 직접 호출 시 저장 단위
+WORKERS = 32         # 직접 호출 동시 요청 수. 429는 SDK가 재시도(max_retries=5)하고, 그래도 실패한 항목은 다음 실행에서 다시 한다
 BATCH_CHUNK = 2000   # Batches 한 건당 요청 수. 요청 본문 256MB 제한과, 중단 시 잃는 작업량을 함께 고려한 값이다.
 POLL_SECONDS = 30
 
@@ -54,7 +55,7 @@ def _direct(client, items: dict[str, str], params: Callable[[str], dict]) -> dic
             print(f"llm: {key} failed ({type(e).__name__})")
             return None
 
-    with ThreadPoolExecutor(8) as pool:
+    with ThreadPoolExecutor(WORKERS) as pool:
         return dict(zip(items, pool.map(one, items)))
 
 
