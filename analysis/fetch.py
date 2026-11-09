@@ -130,7 +130,12 @@ def _rewrite(url: str) -> str:
 async def _fetch_one(client: httpx.AsyncClient, sem: asyncio.Semaphore, host_sems, url: str) -> dict:
     row: dict = {"url": url}
     target = _rewrite(url)
-    async with host_sems[urlsplit(target).hostname], sem:
+    try:
+        host = urlsplit(target).hostname
+    except ValueError:
+        row["fetch_error"] = "InvalidURL"
+        return row
+    async with host_sems[host], sem:
         try:
             resp = await client.get(target)
         except httpx.HTTPError as e:
@@ -140,7 +145,10 @@ async def _fetch_one(client: httpx.AsyncClient, sem: asyncio.Semaphore, host_sem
     row.update(http_status=resp.status_code, content_type=ctype)
     if resp.status_code == 200 and "html" in ctype:  # PDF 등은 본문 추출을 생략한다
         html = decode_file(resp.content[:MAX_BYTES])
-        row.update(await asyncio.to_thread(extract_features, html, url))
+        try:
+            row.update(await asyncio.to_thread(extract_features, html, url))
+        except Exception as e:  # 페이지 하나의 파싱 오류로 전체 수집이 멈추지 않게 한다
+            row["fetch_error"] = f"extract: {type(e).__name__}"
     return row
 
 

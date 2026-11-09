@@ -37,7 +37,10 @@ def _term_pattern(term: str) -> re.Pattern[str]:
 
 def url_domain(url: str) -> str:
     """schema.sql의 citations.domain 생성식과 같은 규칙 (소문자, www. 제거)."""
-    host = (urlsplit(url).hostname or "").lower()
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:  # 깨진 주소 (예: 닫히지 않은 '[' → Invalid IPv6 URL)
+        return ""
     return host.removeprefix("www.")
 
 

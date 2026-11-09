@@ -8,7 +8,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
-step() { echo "$(date '+%F %T') ▶ $*"; $PY -u -m analysis "$@" || echo "$(date '+%F %T') ✗ $* (exit $?)"; }
+step() { echo "$(date '+%F %T') ▶ $*"; $PY -u -m analysis "$@" || { rc=$?; echo "$(date '+%F %T') ✗ $* (exit $rc)"; }; }
 
 ( step label-queries; step label-responses ) 2>&1 | sed -u 's/^/[A] /' &
 ( step fetch --concurrency 40; step overlap; step label-axes; step label-keywords ) 2>&1 | sed -u 's/^/[B] /' &
