@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 from typing import Iterable
 
+import numpy as np
+
 from . import llm
 
 MODEL_NAME = os.environ.get("KEYWORD_MODEL", "BAAI/bge-m3")
@@ -72,6 +74,21 @@ def _encode(texts: list[str]):
     return _model.encode(texts, normalize_embeddings=True, batch_size=64)
 
 
+_bank: tuple[list[int], list[str], "np.ndarray"] | None = None
+
+
+def _bank_for(conn, dim: int):
+    """사전(analysis.keyword)의 (id, 대표 표기, 벡터 행렬). 프로세스마다 한 번 읽고, 이후 _add가 새로 만든 것을 붙인다.
+    ponytail: 다른 프로세스가 그 사이 넣은 대표 키워드는 후보에서 빠진다 (같은 표기 키는 alias의 on conflict가 막는다)."""
+    global _bank
+    if _bank is None:
+        rows = conn.execute("select id, canonical, embedding::real[] from analysis.keyword where model = %s",
+                            (MODEL_NAME,)).fetchall()
+        _bank = ([r[0] for r in rows], [r[1] for r in rows],
+                 np.array([r[2] for r in rows], dtype=np.float32).reshape(len(rows), dim))
+    return _bank
+
+
 def _lit(v) -> str:
     return "[" + ",".join(f"{x:.6f}" for x in v) + "]"
 
@@ -118,20 +135,13 @@ def _add(conn, new: list[tuple[str, str]], candidate_distance: float) -> dict[st
     vecs = _encode(surf)
     lits = [_lit(v) for v in vecs]
     # 후보: ('db', keyword_id, 표기, 거리) 또는 ('peer', 이번 묶음 안의 앞 순번, 표기, 거리)
-    near: dict[int, list[tuple]] = {i: [] for i in range(len(new))}
-    for o, kid, text, d in conn.execute(  # 한 번의 왕복으로 전체 후보 조회 (풀러가 멀어서 키워드마다 물으면 느리다)
-            """
-            select v.o, k.id, k.canonical, k.d
-            from unnest(%s::text[]) with ordinality v(vec, o)
-            cross join lateral (
-                select id, canonical, embedding <=> v.vec::extensions.vector as d from analysis.keyword
-                where model = %s order by d limit %s) k
-            where k.d <= %s
-            """, (lits, MODEL_NAME, TOP_K, candidate_distance)).fetchall():
-        near[o - 1].append(("db", kid, text, float(d)))
+    # DB의 pgvector 전수 비교는 키워드 하나에 0.5초(사전 2,700개 기준)라 메모리에 올린 사전과 numpy로 비교한다.
+    ids, texts, mat = _bank_for(conn, vecs.shape[1])
+    dist = 1 - mat @ vecs.T  # (사전, 새 키워드)
     cands: list[list[tuple]] = []
     for i in range(len(new)):
-        c = near[i]
+        top = np.argsort(dist[:, i])[:TOP_K] if len(ids) else []
+        c = [("db", ids[k], texts[k], float(dist[k, i])) for k in top if dist[k, i] <= candidate_distance]
         if i:
             d = 1 - vecs[:i] @ vecs[i]
             c += [("peer", j, surf[j], float(d[j])) for j in range(i) if d[j] <= candidate_distance]
@@ -143,36 +153,45 @@ def _add(conn, new: list[tuple[str, str]], candidate_distance: float) -> dict[st
         llm.run(items, system=MATCH_SYSTEM, schema=MATCH_SCHEMA, save=verdicts.update, max_tokens=4000,
                 effort=JUDGE_EFFORT)
 
-    placed: dict[int, int] = {}  # 순번 → keyword_id
-    out: dict[str, int] = {}
-    for i, (key, raw) in enumerate(new):
+    plan: dict[int, tuple] = {}  # 순번 → (종류 new|db|peer, 참조, 거리). 판정 실패는 빠진다 (이번엔 건너뜀)
+    for i in range(len(new)):
         if str(i) in items and str(i) not in verdicts:
-            continue  # 판정 실패 → 이번엔 건너뜀
+            continue
         m = verdicts.get(str(i), {}).get("match", 0)
-        kid, dist = None, None
-        if 1 <= m <= len(cands[i]):
-            kind, ref, _, dist = cands[i][m - 1]
-            kid = ref if kind == "db" else placed.get(ref)
-            if kid is None:  # 짝이 된 앞 키워드가 판정 실패로 빠졌다
-                continue
-        if kid is None:
-            kid = conn.execute(
-                """
-                insert into analysis.keyword (canonical, model, embedding) values (%s, %s, %s::extensions.vector)
-                on conflict (model, canonical) do update set canonical = excluded.canonical returning id
-                """, (raw, MODEL_NAME, lits[i])).fetchone()[0]
-            method, dist = "new", None
-        else:
-            method = "llm"
-        # 다른 프로세스가 같은 키를 먼저 넣었으면 그쪽을 따른다
-        row = conn.execute(
-            """
-            insert into analysis.keyword_alias (alias_key, surface, keyword_id, method, distance)
-            values (%s, %s, %s, %s, %s) on conflict (alias_key) do nothing returning keyword_id
-            """, (key, raw, kid, method, dist)).fetchone()
-        placed[i] = out[key] = row[0] if row else conn.execute(
-            "select keyword_id from analysis.keyword_alias where alias_key = %s", (key,)).fetchone()[0]
-    return out
+        plan[i] = cands[i][m - 1][:2] + cands[i][m - 1][3:] if 1 <= m <= len(cands[i]) else ("new", None, None)
+
+    # 원격 DB 왕복(노트북에서 약 270ms)이 병목이라 키워드마다 insert하지 않고 묶음 하나로 넣는다.
+    fresh = [surf[i] for i, p in plan.items() if p[0] == "new"]
+    ids = dict(conn.execute(
+        """
+        insert into analysis.keyword (canonical, model, embedding)
+        select distinct on (c) c, %s, e::extensions.vector from unnest(%s::text[], %s::text[]) t(c, e)
+        on conflict (model, canonical) do update set canonical = excluded.canonical returning canonical, id
+        """, (MODEL_NAME, fresh, [lits[i] for i, p in plan.items() if p[0] == "new"])).fetchall()) if fresh else {}
+    global _bank
+    b_ids, b_texts, b_mat = _bank
+    have = set(b_ids)
+    added = [i for i, p in plan.items() if p[0] == "new" and ids[surf[i]] not in have]
+    if added:
+        _bank = (b_ids + [ids[surf[i]] for i in added], b_texts + [surf[i] for i in added],
+                 np.vstack([b_mat, vecs[added]]))
+    kid: dict[int, int] = {}
+    for i, (kind, ref, _) in plan.items():  # 순번 순서. peer는 늘 앞 순번을 가리킨다
+        k = ids[surf[i]] if kind == "new" else ref if kind == "db" else kid.get(ref)
+        if k is not None:  # peer 짝이 판정 실패로 빠졌으면 건너뜀
+            kid[i] = k
+    if not kid:
+        return {}
+    keys = [new[i][0] for i in kid]
+    conn.execute(  # 다른 프로세스가 같은 키를 먼저 넣었으면 그쪽을 따른다 (아래 select가 기존 값을 돌려줌)
+        """
+        insert into analysis.keyword_alias (alias_key, surface, keyword_id, method, distance)
+        select * from unnest(%s::text[], %s::text[], %s::bigint[], %s::text[], %s::real[])
+        on conflict (alias_key) do nothing
+        """, (keys, [surf[i] for i in kid], list(kid.values()),
+              ["new" if plan[i][0] == "new" else "llm" for i in kid], [plan[i][2] for i in kid]))
+    return dict(conn.execute(
+        "select alias_key, keyword_id from analysis.keyword_alias where alias_key = any(%s)", (keys,)).fetchall())
 
 
 def set_alias(surface: str, to: str | None = None) -> None:
