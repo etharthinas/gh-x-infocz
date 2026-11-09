@@ -11,7 +11,8 @@
   python -m analysis label-keywords                  # analysis.page_label.topic_keywords (Haiku, label-axes 다음에)
   python -m analysis normalize-keywords              # 키워드 사전 백필 (임베딩 후보 + Haiku 판정) · --rebuild
   python -m analysis keyword-alias "LLM analysis"    # 잘못 묶인 표기 떼어 내기 (--to "대표"로 다른 대표에 붙이기)
-  python -m analysis rules                         # analysis 스키마의 규칙·자동 축 (label-responses 다음에)
+  python -m analysis discover-vendors --sample       # 답변 속 업체 추출 (미등록 경쟁사 후보, Haiku)
+  python -m analysis rules                     # analysis 스키마의 규칙·자동 축 (label-responses 다음에)
   python -m analysis sample                          # 고정 시드 표본으로 위 단계를 모두 실행하고 요약 출력
   python -m analysis report                          # data/analysis/*.csv
 """
@@ -56,6 +57,8 @@ def main() -> None:
     p = add("keyword-alias", batch=False, limit=False, help="표기 → 대표 키워드를 직접 지정 (manual, --rebuild에도 유지)")
     p.add_argument("surface")
     p.add_argument("--to", help="붙일 대표 키워드의 표기. 없으면 독립된 대표 키워드로 떼어 낸다")
+    p = add("discover-vendors", api_batch=True, help="답변 속 업체 추출 (미등록 경쟁사 발견, Haiku)")
+    p.add_argument("--sample", action="store_true", help="sample 명령과 같은 고정 시드 표본만")
     add("rules", limit=False, help="규칙·자동 축 계산 (Self Authored·Language·Visual·Answer Dominance 등)")
     p = add("sample", limit=False, help="고정 시드 표본(엔진별 인포시즈 인용/비인용 답변)으로 전체 파이프라인 실행 + 요약")
     p.add_argument("--seed", default=None, help="표본 시드 (기본 analysis.sample.SEED)")
@@ -93,6 +96,10 @@ def main() -> None:
     elif a.cmd == "keyword-alias":
         from . import keywords
         keywords.set_alias(a.surface, a.to)
+    elif a.cmd == "discover-vendors":
+        from . import connect, sample, vendors
+        ids = sample.response_ids(connect(), batch=a.batch) if a.sample else None
+        vendors.run(batch=a.batch, limit=a.limit, response_ids=ids, use_batch_api=a.api_batch)
     elif a.cmd == "rules":
         from . import rules
         rules.run(batch=a.batch)

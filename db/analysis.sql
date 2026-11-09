@@ -369,3 +369,60 @@ with v as (
 select v.*, (select count(distinct a.surface) from analysis.keyword_alias a where a.keyword_id = v.keyword_id) as n_aliases,
        round(citations * 1.0 / nullif(sum(citations) over (partition by keyword_id, batch), 0), 4) as share
 from v;
+
+-- ---------- 답변 속 업체 (경쟁사 발견, analysis/vendors.py) ----------
+-- crawler의 정규식 매칭(response_mentions)은 entities에 등록된 업체만 잡는다. 여기에는 Haiku가 답변에서 직접 뽑은 업체를
+-- 순서대로 두고, 뽑힌 이름을 정규식에 넣어 entity_id를 붙인다. kind = 'vendor' and entity_id is null → 미등록 후보.
+create table if not exists analysis.response_vendor (
+    response_id   bigint not null references public.responses (id) on delete cascade,
+    label_version text not null,
+    label_model   text not null,
+    labeled_at    timestamptz not null default now(),
+    vendors       jsonb not null,                -- [{name, spellings, kind: vendor|customer|other, entity_id}] 답변에 나온 순서
+    primary key (response_id, label_version)
+);
+alter table analysis.response_vendor enable row level security;
+
+create or replace view analysis.v_response_vendor as
+select v.response_id, v.label_version, x.ord, x.v ->> 'name' as name, x.v ->> 'kind' as kind,
+       (x.v ->> 'entity_id')::bigint as entity_id, e.name as entity_name, e.role as entity_role
+from analysis.response_vendor v
+cross join lateral jsonb_array_elements(v.vendors) with ordinality x(v, ord)
+left join public.entities e on e.id = (x.v ->> 'entity_id')::bigint;
+
+-- 같은 답변에서 정규식(response_mentions)과 LLM 추출을 맞대 본다. regex_only = 정규식 오탐 후보, llm_only = 등록 별칭 누락 후보.
+-- 답변이 새로 꺼낸 업체만 보므로, 질문에 나온 엔티티(query_entities)는 정규식 쪽에서도 뺀다.
+create or replace view analysis.v_response_vendor_check as
+with llm as (select distinct response_id, label_version, entity_id from analysis.v_response_vendor where entity_id is not null),
+     rx as (select m.response_id, v.label_version, m.entity_id
+            from public.response_mentions m join analysis.response_vendor v using (response_id)
+            join public.responses r on r.id = m.response_id
+            where not exists (select 1 from public.query_entities qe
+                              where qe.query_id = r.query_id and qe.entity_id = m.entity_id))
+select coalesce(l.response_id, r.response_id) as response_id, coalesce(l.label_version, r.label_version) as label_version,
+       coalesce(l.entity_id, r.entity_id) as entity_id,
+       case when l.entity_id is null then 'regex_only' when r.entity_id is null then 'llm_only' else 'both' end as agreement
+from llm l full join rx r using (response_id, label_version, entity_id);
+
+-- 미등록 경쟁사 후보. 같은 질문을 엔진·반복 회차(run_no)·측정 회차(batch)로 여러 번 물으므로 답변 수가 아니라
+-- 질문(query_id) 수로 센다. 답변마다 가장 최근 label_version 결과만 쓰고, 표기는 analysis.keyword_key 로 묶는다.
+-- first_batch · first_seen: 처음 나온 측정 회차 — 최신 회차에서 처음 나왔으면 새 시장 참여자 후보.
+create or replace view analysis.v_vendor_candidates as
+with latest as (
+    select distinct on (response_id) response_id, label_version
+    from analysis.response_vendor order by response_id, labeled_at desc
+), v as (
+    select analysis.keyword_key(v.name) as key, v.name, r.query_id, r.id as response_id, r.engine, r.batch,
+           r.executed_at, q.market
+    from analysis.v_response_vendor v
+    join latest l using (response_id, label_version)
+    join public.responses r on r.id = v.response_id
+    join public.queries q on q.id = r.query_id
+    where v.kind = 'vendor' and v.entity_id is null
+)
+select key, mode() within group (order by name) as name,
+       count(distinct query_id) as queries, count(distinct response_id) as responses,
+       array_agg(distinct engine order by engine) as engines, array_agg(distinct market order by market) as markets,
+       (array_agg(batch order by executed_at))[1] as first_batch, min(executed_at) as first_seen
+from v where key is not null
+group by key;

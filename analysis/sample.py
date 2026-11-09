@@ -8,10 +8,11 @@ ponytail: 회차에 응답이 추가되면 표본이 바뀔 수 있다. 회차�
 from __future__ import annotations
 
 import json
+import re
 from decimal import Decimal
 from pathlib import Path
 
-from . import DEFAULT_BATCH, ROOT, connect, fetch, jev, label, metrics, rules
+from . import DEFAULT_BATCH, ROOT, connect, fetch, jev, label, metrics, rules, vendors
 
 SEED = "sample-2026-11"
 ENGINES = ["chatgpt", "gemini", "claude", "naver_ai_briefing", "google_aio"]  # analysis.v_citation_analysis와 같은 목록
@@ -116,18 +117,55 @@ EXPORTS = {
                a.brand_role, round(a.query_match::numeric, 3) as query_match, a.passage_type, a.lang_match
         from analysis.v_citation_analysis a join sample s on s.id = a.response_id
         order by a.response_id, a.position nulls last, a.citation_id""",
+    # 답변마다 인식된 회사: LLM 추출(analysis.response_vendor, 답변별 최신 버전)과 기존 정규식(response_mentions)을 맞댄다.
+    # status  both 둘 다 · new 미등록 vendor(기존 방식이 못 잡음) · llm_only 등록됐지만 정규식이 놓침 ·
+    #         unregistered_other 미등록 customer/other · regex_only 정규식만 · question 질문에 나온 엔티티(분석 제외)
+    # terms   본문 하이라이트용 표기 (LLM 표기 + 등록 이름·별칭)
+    "vendors": """
+        with latest as (select distinct on (response_id) * from analysis.response_vendor
+                        order by response_id, labeled_at desc),
+        llm as (select v.response_id, x.ord, x.v ->> 'name' as name, x.v ->> 'kind' as kind,
+                       (x.v ->> 'entity_id')::bigint as entity_id,
+                       array(select jsonb_array_elements_text(x.v -> 'spellings')) as terms
+                from latest v join sample s on s.id = v.response_id
+                cross join lateral jsonb_array_elements(v.vendors) with ordinality x(v, ord)),
+        rx as (select m.response_id, m.entity_id, m.rank, e.name || e.aliases as terms,
+                      exists (select 1 from responses r join query_entities qe on qe.query_id = r.query_id
+                              where r.id = m.response_id and qe.entity_id = m.entity_id) as asked
+               from response_mentions m join sample s on s.id = m.response_id join entities e on e.id = m.entity_id)
+        select coalesce(l.response_id, r.response_id) as response_id, l.ord, coalesce(l.name, e.name) as name, l.kind,
+               coalesce(l.entity_id, r.entity_id) as entity_id, e.name as entity_name, e.role::text as entity_role,
+               r.rank as regex_rank,
+               case when r.asked then 'question'
+                    when l.response_id is null then 'regex_only'
+                    when l.entity_id is null then case when l.kind = 'vendor' then 'new' else 'unregistered_other' end
+                    when r.response_id is null then 'llm_only'
+                    else 'both' end as status,
+               coalesce(l.terms, '{}') || coalesce(r.terms, '{}') as terms
+        from llm l full join rx r on r.response_id = l.response_id and r.entity_id = l.entity_id
+        left join entities e on e.id = coalesce(l.entity_id, r.entity_id)
+        order by 1, l.ord nulls last, r.rank nulls last, 3""",
 }
 
 
 def export(conn, out: Path) -> None:
     """summarize()를 먼저 불러야 한다 (temp 테이블 sample)."""
     out.mkdir(parents=True, exist_ok=True)
+    data = {}
     for name, sql in EXPORTS.items():
         cur = conn.execute(sql)
         cols = [d.name for d in cur.description]
-        rows = [{c: float(v) if isinstance(v, Decimal) else v for c, v in zip(cols, row)} for row in cur.fetchall()]
-        (out / f"{name}.json").write_text(json.dumps(rows, ensure_ascii=False, default=str), encoding="utf-8")
-        print(f"sample: {len(rows)} rows → {out / name}.json")
+        data[name] = [{c: float(v) if isinstance(v, Decimal) else v for c, v in zip(cols, row)} for row in cur.fetchall()]
+        (out / f"{name}.json").write_text(json.dumps(data[name], ensure_ascii=False, default=str), encoding="utf-8")
+        print(f"sample: {len(data[name])} rows → {out / name}.json")
+    # dashboard.html(직접 만든 페이지)은 데이터를 한 줄로 품고 있으므로 그 줄만 바꾼다
+    page = out / "dashboard.html"
+    if page.exists():
+        line = "<script>const DATA = " + json.dumps(data, ensure_ascii=False, default=str).replace("</", "<\\/") + ";</script>"
+        html = re.sub(r"^<script>const DATA = .*;</script>$", lambda _: line, page.read_text(encoding="utf-8"), count=1,
+                      flags=re.M)
+        page.write_text(html, encoding="utf-8")
+        print(f"sample: {page} 데이터 갱신")
 
 
 def run(*, batch: str = DEFAULT_BATCH, seed: str = SEED, per_group: int = 5) -> None:
@@ -140,6 +178,7 @@ def run(*, batch: str = DEFAULT_BATCH, seed: str = SEED, per_group: int = 5) -> 
     label.label_responses(batch=batch, response_ids=ids)
     jev.run(batch=batch, response_ids=ids)
     label.label_topic_keywords(response_ids=ids)
+    vendors.run(batch=batch, response_ids=ids)
     rules.run(batch=batch, response_ids=ids)
     summarize(conn, ids)
     export(conn, ROOT / "data" / "analysis" / "sample")
